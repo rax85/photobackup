@@ -1,63 +1,58 @@
 import json
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from absl import app, flags, logging
-import sys # Required for sys.exit in main if flags are not parsed
+import os
+import sys
 import threading
 import time
 
+from absl import app as absl_app
+from absl import flags, logging
+from flask import Flask, jsonify, abort, send_from_directory
+
 # Correctly import from the same package
 try:
-    from . import media_scanner # Relative import for when run as part of the package
+    from . import media_scanner
 except ImportError:
-    # Fallback for direct script execution (e.g. `python media_server/server.py`)
-    # This assumes media_scanner.py is in the same directory.
-    import media_scanner
-
+    import media_scanner # Fallback for direct execution
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_string('storage_dir', None, 'Directory to scan for media files.')
-flags.DEFINE_integer('port', 8000, 'Port for the HTTP server.')
-flags.DEFINE_integer('rescan_interval', 0, 'Interval in seconds for background rescanning. 0 to disable.')
-flags.mark_flag_as_required('storage_dir')
+# Define flags if not already defined (e.g., when running tests that don't invoke main())
+# This is a bit of a workaround for absl's flag system.
+try:
+    flags.DEFINE_string('storage_dir', None, 'Directory to scan for media files.')
+    flags.DEFINE_integer('port', 8000, 'Port for the HTTP server.')
+    flags.DEFINE_integer('rescan_interval', 0, 'Interval in seconds for background rescanning. 0 to disable.')
+    # Mark as required only if this script is the entry point,
+    # otherwise, tests or other modules might define/use them differently.
+    if __name__ == "__main__":
+        flags.mark_flag_as_required('storage_dir')
+except flags.FlagsError:
+    pass # Flags are already defined
 
 # Global variable to store media data and a lock for thread-safe access
 MEDIA_DATA_CACHE = {}
 MEDIA_DATA_LOCK = threading.Lock()
 
-class MediaRequestHandler(BaseHTTPRequestHandler):
-    """Handles HTTP requests for the media server."""
+# Create Flask app instance
+app = Flask(__name__)
 
-    def do_GET(self):
-        """Handles GET requests."""
-        if self.path == '/list':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            with MEDIA_DATA_LOCK:
-                # Create a deep copy to avoid issues if the cache is updated while serializing/sending
-                data_to_send = {k: v.copy() for k, v in MEDIA_DATA_CACHE.items()}
-            self.wfile.write(json.dumps(data_to_send).encode('utf-8'))
-            logging.info(f"Served /list request from {self.client_address[0]}")
-        else:
-            self.send_response(404)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'Error 404: Not Found. Use /list endpoint.')
-            logging.warning(f"Invalid path requested: {self.path} from {self.client_address[0]}")
-
-def background_scanner():
+def background_scanner_task():
     """Periodically rescans the storage directory and updates the cache."""
     global MEDIA_DATA_CACHE
-    logging.info(f"Background scanner started. Rescan interval: {FLAGS.rescan_interval} seconds.")
+    # Ensure app context is available if needed for config, though here we use FLAGS directly
+    # as it's initialized before this thread starts.
+    if not FLAGS.storage_dir or FLAGS.rescan_interval <= 0:
+        logging.error("Background scanner cannot start: storage_dir or rescan_interval not configured properly.")
+        return
+
+    logging.info(f"Background scanner started. Rescan interval: {FLAGS.rescan_interval} seconds for dir: {FLAGS.storage_dir}")
     while True:
         time.sleep(FLAGS.rescan_interval)
         logging.info("Background scanner performing rescan...")
         try:
             with MEDIA_DATA_LOCK: # Acquire lock before modifying cache
-                # Pass the current cache to scan_directory for an update
                 updated_data = media_scanner.scan_directory(
-                    FLAGS.storage_dir,
+                    FLAGS.storage_dir, # Use FLAGS.storage_dir as app.config might not be set in this thread
                     existing_data=MEDIA_DATA_CACHE,
                     rescan=True
                 )
@@ -66,44 +61,89 @@ def background_scanner():
         except Exception as e:
             logging.error(f"Error during background scan: {e}", exc_info=True)
 
+@app.route('/list', methods=['GET'])
+def list_media():
+    """Handles GET requests for /list endpoint."""
+    with MEDIA_DATA_LOCK:
+        # Create a deep copy to avoid issues if the cache is updated while serializing/sending
+        data_to_send = {k: v.copy() for k, v in MEDIA_DATA_CACHE.items()}
+    logging.info(f"Served /list request")
+    return jsonify(data_to_send)
 
-def run_server(argv):
-    """Starts the HTTP server after scanning the media directory."""
+@app.route('/thumbnail/<string:sha256_hex>', methods=['GET'])
+def get_thumbnail(sha256_hex):
+    """Serves a thumbnail image if it exists."""
+    # Validate sha256_hex format (64 hex characters)
+    if not (len(sha256_hex) == 64 and all(c in '0123456789abcdefABCDEF' for c in sha256_hex)):
+        logging.warning(f"Invalid SHA256 format requested: {sha256_hex}")
+        abort(400, description="Invalid SHA256 format.")
+
+    thumbnail_filename = f"{sha256_hex}{media_scanner.THUMBNAIL_EXTENSION}"
+    thumbnail_dir_abs_path = app.config.get('THUMBNAIL_DIR')
+
+    if not thumbnail_dir_abs_path:
+        logging.error("Thumbnail directory not configured in the application.")
+        abort(500, description="Server configuration error.")
+
+    # Ensure the thumbnail directory itself exists, though send_from_directory handles file not found.
+    # This check is more for sanity during development or if the dir should always exist.
+    if not os.path.isdir(thumbnail_dir_abs_path):
+        logging.warning(f"Thumbnail directory does not exist: {thumbnail_dir_abs_path}")
+        # If the .thumbnails directory itself doesn't exist, no thumbnails can exist.
+        abort(404, description="Thumbnail not found (directory missing).")
+
+    # Import Werkzeug's NotFound exception
+    from werkzeug.exceptions import NotFound
+
+    try:
+        logging.info(f"Attempting to serve thumbnail: {thumbnail_filename} from {thumbnail_dir_abs_path}")
+        return send_from_directory(thumbnail_dir_abs_path, thumbnail_filename, mimetype='image/png')
+    except NotFound: # Specifically catch Werkzeug's NotFound
+        logging.info(f"Thumbnail not found via send_from_directory: {thumbnail_filename} in {thumbnail_dir_abs_path}")
+        abort(404, description="Thumbnail not found.")
+    except Exception as e: # Catch any other unexpected errors
+        logging.error(f"Unexpected error serving thumbnail {thumbnail_filename}: {e}", exc_info=True)
+        abort(500, description="Internal server error while serving thumbnail.")
+
+
+def run_flask_app(argv):
+    """Starts the Flask server after scanning the media directory."""
     # argv is parsed by absl.app.run automatically.
     global MEDIA_DATA_CACHE
 
-    logging.set_verbosity(logging.INFO) # Set logging level
+    logging.set_verbosity(logging.INFO)
 
-    if not FLAGS.storage_dir: # Should be caught by mark_flag_as_required
-        logging.error("Storage directory not provided.")
-        sys.exit(1) # Exit if flag parsing somehow fails to catch this.
+    if not FLAGS.storage_dir:
+        logging.error("Storage directory not provided via --storage_dir flag.")
+        sys.exit(1)
 
-    logging.info(f"Initial scan of storage directory: {FLAGS.storage_dir}")
-    # Initial scan populates the cache directly, no lock needed yet as no other threads access it.
-    MEDIA_DATA_CACHE = media_scanner.scan_directory(FLAGS.storage_dir, rescan=False)
+    app.config['STORAGE_DIR'] = FLAGS.storage_dir
+    app.config['THUMBNAIL_DIR'] = os.path.join(FLAGS.storage_dir, media_scanner.THUMBNAIL_DIR_NAME)
+
+
+    logging.info(f"Initial scan of storage directory: {app.config['STORAGE_DIR']}")
+    # Initial scan populates the cache
+    with MEDIA_DATA_LOCK:
+        MEDIA_DATA_CACHE = media_scanner.scan_directory(app.config['STORAGE_DIR'], rescan=False)
+
     if not MEDIA_DATA_CACHE:
         logging.warning("Initial media scan resulted in no data. Server will start with an empty list.")
 
     if FLAGS.rescan_interval > 0:
-        scanner_thread = threading.Thread(target=background_scanner, daemon=True)
+        scanner_thread = threading.Thread(target=background_scanner_task, daemon=True)
         scanner_thread.start()
     else:
         logging.info("Background rescanning disabled (rescan_interval <= 0).")
 
-    server_address = ('', FLAGS.port)
-    httpd = HTTPServer(server_address, MediaRequestHandler)
+    logging.info(f"Starting Flask HTTP server on port {FLAGS.port}...")
+    # Setting use_reloader=False because it can cause issues with absl flags and background threads
+    # For development, reloader is useful, but for this setup, it's safer to disable.
+    # Debug mode should also be False for this setup unless specifically needed for Flask debugging.
+    app.run(host='0.0.0.0', port=FLAGS.port, debug=False, use_reloader=False)
 
-    logging.info(f"Starting HTTP server on port {FLAGS.port}...")
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        logging.info("Server is shutting down.")
-        httpd.server_close()
-
-def main():
-    # absl.app.run will parse flags and then call run_server
-    # It expects a function that takes one argument (sys.argv)
-    app.run(run_server)
+def main_flask():
+    # absl.app.run will parse flags and then call run_flask_app
+    absl_app.run(run_flask_app)
 
 if __name__ == '__main__':
-    main()
+    main_flask()
