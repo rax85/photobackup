@@ -5,20 +5,20 @@ and provides a JSON list of these files along with their SHA256 hash and last mo
 
 ## Installation
 
-\`\`\`bash
+```bash
 pip install .
 # or for development
 pip install -e .
 pip install -r requirements-dev.txt # If you have dev specific requirements
-\`\`\`
+```
 
 ## Usage
 
 Run the server using the following command:
 
-\`\`\`bash
+```bash
 media-server --storage_dir /path/to/your/media --port 8080
-\`\`\`
+```
 
 -   `--storage_dir`: (Required) The directory containing media files to scan.
 -   `--port`: (Optional) The port number for the server to listen on. Defaults to 8000.
@@ -29,7 +29,7 @@ media-server --storage_dir /path/to/your/media --port 8080
     to its filename and last modified timestamp.
 
 Example response:
-\`\`\`json
+```json
 {
   "sha256_hash_1": {
     "filename": "image.jpg",
@@ -40,4 +40,4 @@ Example response:
     "last_modified": 1678886401.0
   }
 }
-\`\`\`
+```
