@@ -7,8 +7,8 @@ This document provides guidance for AI agents working on the `rest-file-server` 
 The project is a Python-based HTTP REST server that:
 1.  Scans a specified directory (via the `--storage_dir` flag).
 2.  Identifies file types using `python-magic` (which relies on `libmagic`).
-3.  Calculates the SHA256 hash for each **media file (image/* or video/* MIME types)** found.
-4.  Exposes a `/list` API endpoint that returns a JSON mapping of SHA256 hashes to lists of media file paths that share that hash.
+3.  Calculates the SHA256 hash for each **media file (image/* or video/* MIME types)** found and retrieves its last modified timestamp using `os.path.getmtime()`.
+4.  Exposes a `/list` API endpoint that returns a JSON mapping of SHA256 hashes to lists of objects. Each object contains `{"filepath": "path/to/file", "last_modified": timestamp}`.
 5.  Uses `absl-py` for command-line flags, application entry point, and logging.
 6.  Uses the standard library `http.server` for the web server component.
 
@@ -26,7 +26,7 @@ The project is a Python-based HTTP REST server that:
     -   A global variable `file_map` stores the results of the directory scan. This is populated when `run_server` starts.
 -   **`rest_server/lib/file_scanner.py`**:
     -   `get_mime_type(filepath)`: Uses `python-magic` to determine and return the MIME type of a file.
-    -   `scan_directory(directory)`: Recursively scans the given directory. For each file, it determines the MIME type. If the type is `image/*` or `video/*`, it calculates its SHA256 hash and adds it to the result dictionary.
+    -   `scan_directory(directory)`: Recursively scans the given directory. For each file, it determines the MIME type. If the type is `image/*` or `video/*`, it calculates its SHA256 hash, gets its last modified timestamp, and stores this information (filepath and timestamp) in a list associated with the hash in the result dictionary.
     -   `calculate_sha256(filepath)`: Calculates and returns the hex digest of a file's SHA256 hash.
 -   **`tests/`**:
     -   `test_file_scanner.py`: Unit tests for `file_scanner.py`.

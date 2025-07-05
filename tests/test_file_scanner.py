@@ -66,12 +66,19 @@ class TestFileScanner(unittest.TestCase):
             f.write(content)
 
         sha256 = hashlib.sha256(content).hexdigest()
+
+        # Set a predictable modified time for test files
+        # os.utime takes (atime, mtime)
+        predictable_mtime = 1678886400.0 # March 15, 2023 12:00:00 PM UTC
+        os.utime(file_path, (os.path.getatime(file_path), predictable_mtime))
+
         self.test_files[name] = {
             "path": file_path,
             "content": content,
             "sha256": sha256,
             "mime": mime_type,
-            "is_media": is_media
+            "is_media": is_media,
+            "last_modified": predictable_mtime
         }
 
     def tearDown(self):
@@ -112,18 +119,32 @@ class TestFileScanner(unittest.TestCase):
         expected_map = {}
         for name, info in self.test_files.items():
             if info["is_media"]:
+                file_data = {
+                    "filepath": info["path"],
+                    "last_modified": info["last_modified"]
+                }
                 if info["sha256"] not in expected_map:
                     expected_map[info["sha256"]] = []
-                expected_map[info["sha256"]].append(info["path"])
+                expected_map[info["sha256"]].append(file_data)
 
-        for sha_key in expected_map: # Sort for consistent comparison
-            expected_map[sha_key].sort()
+        for sha_key in expected_map: # Sort lists of dicts by filepath for consistent comparison
+            expected_map[sha_key].sort(key=lambda x: x["filepath"])
 
         result = file_scanner.scan_directory(self.storage_path)
-        for sha_key in result: # Sort for consistent comparison
-            result[sha_key].sort()
+        for sha_key in result: # Sort lists of dicts by filepath for consistent comparison
+            result[sha_key].sort(key=lambda x: x["filepath"])
 
-        self.assertEqual(result, expected_map)
+        # Custom comparison for lists of dictionaries, as assertEqual might struggle with float precision
+        self.assertEqual(len(result), len(expected_map))
+        for sha_key, expected_files_list in expected_map.items():
+            self.assertIn(sha_key, result)
+            actual_files_list = result[sha_key]
+            self.assertEqual(len(actual_files_list), len(expected_files_list))
+            for i, expected_file_info in enumerate(expected_files_list):
+                actual_file_info = actual_files_list[i]
+                self.assertEqual(actual_file_info["filepath"], expected_file_info["filepath"])
+                self.assertAlmostEqual(actual_file_info["last_modified"], expected_file_info["last_modified"], places=5)
+
 
         # Explicitly check that non-media files are not present
         txt_sha = self.test_files["test.txt"]["sha256"]

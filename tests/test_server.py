@@ -51,13 +51,17 @@ class TestServer(unittest.TestCase):
         # Expected map for /list endpoint - only media files
         cls.expected_file_map = {}
         for name, info in cls.test_media_files.items():
-            if info["is_media"]: # This flag is set in _create_server_test_file
+            if info["is_media"]:
+                file_data = {
+                    "filepath": info["path"],
+                    "last_modified": info["last_modified"]
+                }
                 if info["sha256"] not in cls.expected_file_map:
                     cls.expected_file_map[info["sha256"]] = []
-                cls.expected_file_map[info["sha256"]].append(info["path"])
+                cls.expected_file_map[info["sha256"]].append(file_data)
 
-        for sha_key in cls.expected_file_map:
-             cls.expected_file_map[sha_key].sort()
+        for sha_key in cls.expected_file_map: # Sort lists of dicts by filepath for consistent comparison
+             cls.expected_file_map[sha_key].sort(key=lambda x: x["filepath"])
 
 
         # Start the server in a separate thread
@@ -103,11 +107,16 @@ class TestServer(unittest.TestCase):
             f.write(content)
 
         sha256 = hashlib.sha256(content).hexdigest()
+
+        predictable_mtime = 1678886401.0 # Slightly different from file_scanner test for distinction
+        os.utime(file_path, (os.path.getatime(file_path), predictable_mtime))
+
         # Store info about the created file, useful for constructing the expected_file_map
         cls.test_media_files[name] = {
             "path": file_path,
             "sha256": sha256,
-            "is_media": mime_type.startswith("image/") or mime_type.startswith("video/") # Determine based on actual mime
+            "is_media": mime_type.startswith("image/") or mime_type.startswith("video/"), # Determine based on actual mime
+            "last_modified": predictable_mtime
         }
 
 
@@ -136,15 +145,27 @@ class TestServer(unittest.TestCase):
             self.assertEqual(response.headers['Content-Type'], 'application/json')
 
             # Sort lists in both expected and actual for consistent comparison
-            actual_map = response.json()
-            for key in actual_map:
-                actual_map[key].sort()
+            actual_map_raw = response.json()
 
-            expected_map_sorted = {}
-            for key, value in self.expected_file_map.items():
-                expected_map_sorted[key] = sorted(value)
+            # Sort lists of dicts by filepath in actual_map_raw for consistent comparison
+            actual_map_sorted = {}
+            for sha_key, files_list in actual_map_raw.items():
+                actual_map_sorted[sha_key] = sorted(files_list, key=lambda x: x["filepath"])
 
-            self.assertEqual(actual_map, expected_map_sorted)
+            # self.expected_file_map is already sorted by filepath during setup
+
+            # Custom comparison for lists of dictionaries
+            self.assertEqual(len(actual_map_sorted), len(self.expected_file_map))
+            for sha_key, expected_files_list in self.expected_file_map.items():
+                self.assertIn(sha_key, actual_map_sorted)
+                actual_files_list = actual_map_sorted[sha_key]
+                self.assertEqual(len(actual_files_list), len(expected_files_list))
+                for i, expected_file_info in enumerate(expected_files_list):
+                    actual_file_info = actual_files_list[i]
+                    self.assertEqual(actual_file_info["filepath"], expected_file_info["filepath"])
+                    # Timestamps from JSON will be floats, compare them with assertAlmostEqual
+                    self.assertAlmostEqual(actual_file_info["last_modified"], expected_file_info["last_modified"], places=5)
+
         except requests.exceptions.ConnectionError as e:
             self.fail(f"Failed to connect to the test server: {e}")
 

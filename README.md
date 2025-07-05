@@ -74,18 +74,25 @@ The server will start, scan the directory, and log that it's serving on the spec
 ### `/list`
 
 -   **Method:** `GET`
--   **Description:** Returns a JSON object mapping content SHA256 hashes to a list of **media file paths (images/videos)** that have that hash.
+-   **Description:** Returns a JSON object mapping content SHA256 hashes to a list of objects, where each object contains the **media file's path and its last modified timestamp**.
 -   **Example Response:**
     ```json
     {
-      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855": [
-        "/tmp/my_documents/empty_file.txt"
-      ],
       "a14a1fd212205059063870757c276127386efa4857fc713f3000696f7ed9b817": [
-        "/tmp/my_documents/fileA.txt"
+        {
+          "filepath": "/tmp/my_documents/image.png",
+          "last_modified": 1678886400.0
+        },
+        {
+          "filepath": "/tmp/my_documents/subfolder/image_duplicate.png",
+          "last_modified": 1678886401.5
+        }
       ],
       "06a2017352d74c599906a023381a1885594154b1555509710389502842483402": [
-        "/tmp/my_documents/fileB.txt
+        {
+          "filepath": "/tmp/my_documents/video.mp4",
+          "last_modified": 1678886500.0
+        }
       ]
     }
     ```
