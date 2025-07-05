@@ -106,20 +106,104 @@ class TestMediaScanner(unittest.TestCase):
         self.assertIn(self.hash_img1, result)
         self.assertEqual(result[self.hash_img1]['filename'], "image1.jpg")
         self.assertAlmostEqual(result[self.hash_img1]['last_modified'], self.time_img1, places=7)
+        self.assertEqual(result[self.hash_img1]['file_path'], self.file_img1)
 
         # Check video1.mp4
         self.assertIn(self.hash_vid1, result)
         self.assertEqual(result[self.hash_vid1]['filename'], "video1.mp4")
         self.assertAlmostEqual(result[self.hash_vid1]['last_modified'], self.time_vid1, places=7)
+        self.assertEqual(result[self.hash_vid1]['file_path'], self.file_vid1)
 
         # Check subdir/image2.png
         self.assertIn(self.hash_img2, result)
         self.assertEqual(result[self.hash_img2]['filename'], "image2.png")
         self.assertAlmostEqual(result[self.hash_img2]['last_modified'], self.time_img2, places=7)
+        self.assertEqual(result[self.hash_img2]['file_path'], self.file_img2_subdir)
 
         # Ensure text.txt and archive.xyz were not included
         for sha, data in result.items():
             self.assertNotIn(data['filename'], ["document.txt", "archive.xyz"])
+
+    def test_rescan_directory_no_changes(self):
+        initial_scan = media_scanner.scan_directory(self.test_dir)
+        rescan_result = media_scanner.scan_directory(self.test_dir, existing_data=initial_scan, rescan=True)
+        self.assertEqual(initial_scan, rescan_result)
+
+    def test_rescan_directory_add_file(self):
+        initial_scan = media_scanner.scan_directory(self.test_dir)
+
+        # Add a new file
+        time_new_img = time.time() - 200
+        content_new_img = "new image content"
+        hash_new_img = calculate_sha256(content_new_img)
+        file_new_img = create_dummy_file(self.test_dir, "new_image.gif", content_new_img, mtime=time_new_img)
+
+        rescan_result = media_scanner.scan_directory(self.test_dir, existing_data=initial_scan, rescan=True)
+
+        self.assertEqual(len(rescan_result), len(initial_scan) + 1)
+        self.assertIn(hash_new_img, rescan_result)
+        self.assertEqual(rescan_result[hash_new_img]['filename'], "new_image.gif")
+        self.assertAlmostEqual(rescan_result[hash_new_img]['last_modified'], time_new_img, places=7)
+        self.assertEqual(rescan_result[hash_new_img]['file_path'], file_new_img)
+
+    def test_rescan_directory_remove_file(self):
+        initial_scan = media_scanner.scan_directory(self.test_dir)
+
+        # Remove a file (image1.jpg)
+        os.remove(self.file_img1)
+
+        rescan_result = media_scanner.scan_directory(self.test_dir, existing_data=initial_scan, rescan=True)
+
+        self.assertEqual(len(rescan_result), len(initial_scan) - 1)
+        self.assertNotIn(self.hash_img1, rescan_result)
+
+    def test_rescan_directory_modify_file_content_changes_sha(self):
+        initial_scan = media_scanner.scan_directory(self.test_dir)
+
+        # Modify content of image1.jpg (changes SHA)
+        new_content_img1 = "modified image1 content"
+        new_hash_img1 = calculate_sha256(new_content_img1)
+        # Ensure mtime also changes, as real modifications would
+        new_time_img1 = time.time() - 100
+        create_dummy_file(self.test_dir, "image1.jpg", new_content_img1, mtime=new_time_img1) # Overwrites
+
+        rescan_result = media_scanner.scan_directory(self.test_dir, existing_data=initial_scan, rescan=True)
+
+        self.assertEqual(len(rescan_result), len(initial_scan)) # Same number of files
+        self.assertNotIn(self.hash_img1, rescan_result) # Old SHA should be gone
+        self.assertIn(new_hash_img1, rescan_result) # New SHA should be present
+        self.assertEqual(rescan_result[new_hash_img1]['filename'], "image1.jpg")
+        self.assertAlmostEqual(rescan_result[new_hash_img1]['last_modified'], new_time_img1, places=7)
+
+    def test_rescan_directory_modify_file_mtime_only(self):
+        initial_scan = media_scanner.scan_directory(self.test_dir)
+        self.assertIn(self.hash_img1, initial_scan) # Ensure file is in initial scan
+        original_mtime_from_initial_scan = initial_scan[self.hash_img1]['last_modified']
+
+        # Modify mtime of image1.jpg, content (and SHA) remains the same
+        # Ensure new_time_img1 is significantly different and later.
+        new_time_img1 = time.time() + 100 # Clearly different and in the future relative to self.time_img1
+        self.assertNotAlmostEqual(original_mtime_from_initial_scan, new_time_img1, places=7) # Verify it's different beforehand
+
+        os.utime(self.file_img1, (new_time_img1, new_time_img1))
+
+        # Perform the rescan
+        rescan_result = media_scanner.scan_directory(self.test_dir, existing_data=initial_scan, rescan=True)
+
+        # Basic checks
+        self.assertEqual(len(rescan_result), len(initial_scan))
+        self.assertIn(self.hash_img1, rescan_result) # SHA is the same
+        self.assertEqual(rescan_result[self.hash_img1]['filename'], "image1.jpg")
+
+        # Check that the last_modified time IS updated in the rescan_result
+        self.assertAlmostEqual(rescan_result[self.hash_img1]['last_modified'], new_time_img1, places=7)
+
+        # Ensure the original entry in initial_scan was indeed different, confirming the update happened in rescan_result
+        self.assertNotAlmostEqual(original_mtime_from_initial_scan, rescan_result[self.hash_img1]['last_modified'], places=7,
+                                  msg="Timestamp in rescan_result should be updated and different from initial_scan's timestamp.")
+        self.assertAlmostEqual(original_mtime_from_initial_scan, self.time_img1, places=7,
+                                  msg="Timestamp in initial_scan should match the original self.time_img1.")
+
 
     def test_scan_directory_permissions_error_on_metadata(self):
         # This test is tricky to set up reliably across platforms for getmtime.
