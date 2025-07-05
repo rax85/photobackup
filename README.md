@@ -5,9 +5,10 @@ A simple HTTP REST server that scans a specified storage directory, computes SHA
 ## Features
 
 -   Scans a directory recursively.
--   Calculates SHA256 hash for each file.
--   Groups files by their content hash (useful for identifying duplicates).
--   Provides a `/list` API endpoint to return the mapping as JSON.
+-   Calculates SHA256 hash for each **media file (images and videos)**.
+-   Groups media files by their content hash (useful for identifying duplicates).
+-   Uses `python-magic` (libmagic) to determine file MIME types.
+-   Provides a `/list` API endpoint to return the mapping for media files as JSON.
 -   Configurable storage directory and port via command-line flags.
 -   Built with `absl-py` for application startup and flag management.
 -   Packagable as a pip module.
@@ -16,6 +17,7 @@ A simple HTTP REST server that scans a specified storage directory, computes SHA
 
 -   Python 3.7+
 -   pip
+-   `libmagic` library. On Debian/Ubuntu, install with: `sudo apt-get install libmagic1`
 
 ## Installation
 
@@ -36,7 +38,7 @@ A simple HTTP REST server that scans a specified storage directory, computes SHA
     ```bash
     pip install .
     ```
-    This will also install dependencies like `absl-py`.
+    This will also install dependencies like `absl-py` and `python-magic`.
 
 ## Usage
 
@@ -72,7 +74,7 @@ The server will start, scan the directory, and log that it's serving on the spec
 ### `/list`
 
 -   **Method:** `GET`
--   **Description:** Returns a JSON object mapping content SHA256 hashes to a list of file paths that have that hash.
+-   **Description:** Returns a JSON object mapping content SHA256 hashes to a list of **media file paths (images/videos)** that have that hash.
 -   **Example Response:**
     ```json
     {

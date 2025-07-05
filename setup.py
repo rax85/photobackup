@@ -13,6 +13,7 @@ setup(
     install_requires=[
         "absl-py>=1.0.0", # Specify a version range if necessary
         "requests", # For tests, but good to list if used by any utility scripts eventually
+        "python-magic>=0.4.27", # For MIME type detection
     ],
     classifiers=[
         "Development Status :: 3 - Alpha",

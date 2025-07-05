@@ -6,6 +6,7 @@ import hashlib
 import threading
 import time
 import requests
+import socketserver # <--- Add this import
 from absl import flags
 from rest_server import main as server_main
 from rest_server.lib import file_scanner
@@ -26,25 +27,38 @@ class TestServer(unittest.TestCase):
         cls.storage_path = cls.test_dir.name
         cls.port = 8081 # Use a different port for testing
 
-        # Create dummy files for testing the /list endpoint
-        cls.file1_content = b"Hello from server test file1"
-        cls.file1_path = os.path.join(cls.storage_path, "server_file1.txt")
-        with open(cls.file1_path, "wb") as f:
-            f.write(cls.file1_content)
-        cls.file1_sha256 = hashlib.sha256(cls.file1_content).hexdigest()
+        cls.test_media_files = {}
 
-        cls.file2_content = b"Hello from server test file2"
-        cls.file2_path = os.path.join(cls.storage_path, "sub", "server_file2.txt")
-        os.makedirs(os.path.dirname(cls.file2_path), exist_ok=True)
-        with open(cls.file2_path, "wb") as f:
-            f.write(cls.file2_content)
-        cls.file2_sha256 = hashlib.sha256(cls.file2_content).hexdigest()
+        # Dummy PNG image file for server test
+        png_magic = b"\x89PNG\r\n\x1a\n"
+        ihdr_data = b"\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x01\x00\x00\x00\x00"
+        ihdr_crc = b"\x37\x23\x0D\x8F"
+        ihdr_chunk = ihdr_data + ihdr_crc
+        idat_data = b"\x00\x00\x00\x00IDAT"
+        idat_crc = b"\x78\x59\x06\x53"
+        idat_chunk = idat_data + idat_crc
+        iend_chunk = b"\x00\x00\x00\x00IEND\xAEB`\x82"
+        dummy_png_content_server = png_magic + ihdr_chunk + idat_chunk + iend_chunk
+        cls._create_server_test_file("server_image.png", dummy_png_content_server, "image/png")
 
-        # Expected map for /list endpoint
-        cls.expected_file_map = {
-            cls.file1_sha256: [cls.file1_path],
-            cls.file2_sha256: [cls.file2_path]
-        }
+        # Dummy GIF file for server test
+        dummy_gif_content_server = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xFF\xFF\xFF!\xF9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+        cls._create_server_test_file("server_image.gif", dummy_gif_content_server, "image/gif", in_subdir=True)
+
+        # Text file (should be ignored by the server's scan)
+        cls._create_server_test_file("server_text.txt", b"This is a text file for server test.", "text/plain", is_media=False)
+
+        # Expected map for /list endpoint - only media files
+        cls.expected_file_map = {}
+        for name, info in cls.test_media_files.items():
+            if info["is_media"]: # This flag is set in _create_server_test_file
+                if info["sha256"] not in cls.expected_file_map:
+                    cls.expected_file_map[info["sha256"]] = []
+                cls.expected_file_map[info["sha256"]].append(info["path"])
+
+        for sha_key in cls.expected_file_map:
+             cls.expected_file_map[sha_key].sort()
+
 
         # Start the server in a separate thread
         # Store original flag values
@@ -55,21 +69,65 @@ class TestServer(unittest.TestCase):
         FLAGS.storage_dir = cls.storage_path
 
         # The server's file_map is global; we need to ensure it's updated for the test
+        # This is done by run_server, but we'll manage the server instance directly.
+        # server_main.file_map = file_scanner.scan_directory(cls.storage_path)
+
+        # Allow address reuse
+        socketserver.TCPServer.allow_reuse_address = True
+        try:
+            cls.httpd = socketserver.TCPServer(("", cls.port), server_main.Handler)
+        except Exception as e:
+            # If server setup fails, make sure to clean up the temp directory
+            cls.test_dir.cleanup()
+            raise e
+
+        # Update the global file_map that the Handler will use
+        # This needs to be done before the server thread starts serving requests
         server_main.file_map = file_scanner.scan_directory(cls.storage_path)
 
-        cls.server_thread = threading.Thread(target=server_main.run_server, args=(cls.port, cls.storage_path), daemon=True)
+
+        cls.server_thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.server_thread.start()
         time.sleep(0.5) # Give the server a moment to start
 
     @classmethod
+    def _create_server_test_file(cls, name, content, mime_type, is_media=True, in_subdir=False):
+        if in_subdir:
+            dir_path = os.path.join(cls.storage_path, "sub_server") # different subdir to avoid collision with file_scanner tests
+            os.makedirs(dir_path, exist_ok=True)
+            file_path = os.path.join(dir_path, name)
+        else:
+            file_path = os.path.join(cls.storage_path, name)
+
+        with open(file_path, "wb") as f:
+            f.write(content)
+
+        sha256 = hashlib.sha256(content).hexdigest()
+        # Store info about the created file, useful for constructing the expected_file_map
+        cls.test_media_files[name] = {
+            "path": file_path,
+            "sha256": sha256,
+            "is_media": mime_type.startswith("image/") or mime_type.startswith("video/") # Determine based on actual mime
+        }
+
+
+    @classmethod
     def tearDownClass(cls):
-        cls.test_dir.cleanup()
+        if hasattr(cls, 'httpd') and cls.httpd:
+            cls.httpd.shutdown() # Signal serve_forever loop to stop
+            cls.httpd.server_close() # Close the server socket
+
+        # Wait for the server thread to finish
+        if hasattr(cls, 'server_thread') and cls.server_thread:
+            cls.server_thread.join(timeout=1.0) # Wait for up to 1 second
+
+        if hasattr(cls, 'test_dir'): # Ensure test_dir exists before cleanup
+            cls.test_dir.cleanup()
+
         # Restore original flag values
         FLAGS.port = cls.original_port
         FLAGS.storage_dir = cls.original_storage_dir
-        # Note: Stopping a http.server running `serve_forever` is tricky without modifying the server code.
-        # Since it's a daemon thread, it will exit when the main thread (test runner) exits.
-        # For more robust cleanup, the server would need a shutdown mechanism.
+
 
     def test_list_api(self):
         try:

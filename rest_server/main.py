@@ -26,8 +26,10 @@ def run_server(port, storage_dir):
     global file_map
     logging.info(f"Scanning directory: {storage_dir}")
     file_map = file_scanner.scan_directory(storage_dir)
-    logging.info(f"Found {sum(len(files) for files in file_map.values())} files.")
+    logging.info(f"Found {sum(len(files) for files in file_map.values())} media files.")
 
+    # Allow address reuse for faster test reruns and server restarts
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", port), Handler) as httpd:
         logging.info(f"Serving at port {port}")
         httpd.serve_forever()
