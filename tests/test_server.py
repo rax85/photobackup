@@ -204,6 +204,117 @@ class TestServerFlaskIntegration(unittest.TestCase):
         # Restore original config
         flask_app.config['THUMBNAIL_DIR'] = original_thumbnail_dir
 
+    # --- Tests for the new /image/<sha256_hex> endpoint ---
+
+    def test_get_image_success(self):
+        """Test successfully retrieving an original image."""
+        self.assertIsNotNone(self.img1_sha256, "Test setup error: img1_sha256 not set.")
+
+        # Read the original image content for comparison
+        with open(self.img1_path, 'rb') as f:
+            original_image_content = f.read()
+
+        response = self.client.get(f'/image/{self.img1_sha256}')
+        self.assertEqual(response.status_code, 200)
+        # Mimetype for JPEG from PIL might be 'image/jpeg'
+        self.assertIn(response.content_type.lower(), ['image/jpeg', 'image/jpg'])
+        self.assertEqual(response.data, original_image_content)
+
+    def test_get_image_success_for_video_file_type(self):
+        """Test successfully retrieving a file that's not an image (e.g. video)."""
+        self.assertIsNotNone(self.vid1_sha256, "Test setup error: vid1_sha256 not set.")
+
+        # Read the original video content for comparison
+        with open(self.vid1_path, 'rb') as f:
+            original_video_content = f.read()
+
+        response = self.client.get(f'/image/{self.vid1_sha256}')
+        self.assertEqual(response.status_code, 200)
+        # Mimetype for mp4
+        self.assertEqual(response.content_type, 'video/mp4')
+        self.assertEqual(response.data, original_video_content)
+
+
+    def test_get_image_not_found_sha_unknown(self):
+        """Test 404 for a correctly formatted but unknown SHA256 for /image."""
+        unknown_sha = "b" * 64 # Valid format, but unlikely to exist
+        response = self.client.get(f'/image/{unknown_sha}')
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("Image not found", response.get_data(as_text=True))
+
+
+    def test_get_image_invalid_sha_format_too_short(self):
+        response = self.client.get('/image/12345')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid SHA256 format", response.get_data(as_text=True))
+
+    def test_get_image_invalid_sha_format_too_long(self):
+        response = self.client.get('/image/' + 'b' * 65)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid SHA256 format", response.get_data(as_text=True))
+
+    def test_get_image_invalid_sha_format_non_hex(self):
+        response = self.client.get('/image/' + 'h' * 64) # 'h' is not a hex character
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid SHA256 format", response.get_data(as_text=True))
+
+    def test_get_image_file_in_cache_but_not_on_disk(self):
+        """Test 404 if SHA is in cache but file is missing on disk."""
+        self.assertIsNotNone(self.img1_sha256, "img1_sha256 should be set")
+
+        # Ensure the file is in cache (it should be from setUp)
+        self.assertIn(self.img1_sha256, MEDIA_DATA_CACHE)
+
+        # Temporarily move the file
+        original_path = self.img1_path
+        temp_path = self.img1_path + ".moved"
+        os.rename(original_path, temp_path)
+
+        try:
+            response = self.client.get(f'/image/{self.img1_sha256}')
+            self.assertEqual(response.status_code, 404)
+            # The message might come from send_from_directory's NotFound or our abort
+            self.assertIn("Image file not found on disk", response.get_data(as_text=True))
+        finally:
+            # Move the file back
+            os.rename(temp_path, original_path)
+            # Verify it's back for other tests
+            self.assertTrue(os.path.exists(original_path))
+
+    def test_get_image_path_traversal_attempt_blocked(self):
+        """Test that path traversal attempts are blocked."""
+        # This test is a bit conceptual as send_from_directory should block this.
+        # We are testing our additional normalization check and send_from_directory's inherent safety.
+        # Create a fake cache entry that points "outside"
+        malicious_sha = "c" * 64
+        # Path that tries to go up. Note: media_scanner should not produce such paths.
+        # This tests the server's handling if such a path somehow got into the cache.
+        malicious_relative_path = "../../../etc/passwd"
+
+        with MEDIA_DATA_LOCK:
+            original_cache_entry = MEDIA_DATA_CACHE.get(malicious_sha)
+            MEDIA_DATA_CACHE[malicious_sha] = {
+                'filename': 'fake.txt',
+                'file_path': malicious_relative_path, # This is the problematic part
+                'last_modified': time.time(),
+                'original_creation_date': time.time()
+            }
+
+        response = self.client.get(f'/image/{malicious_sha}')
+        # Expect 400 due to our normalization check, or 404 if send_from_directory handles it first
+        # Our current implementation with os.path.normpath should catch it and return 400.
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid file path", response.get_data(as_text=True))
+
+        # Clean up the fake cache entry
+        with MEDIA_DATA_LOCK:
+            if original_cache_entry is None:
+                del MEDIA_DATA_CACHE[malicious_sha]
+            else:
+                MEDIA_DATA_CACHE[malicious_sha] = original_cache_entry
+
+    # --- End of /image endpoint tests ---
+
 
     def test_server_startup_with_empty_directory(self):
         """Test server behavior when storage_dir is empty."""

@@ -141,6 +141,56 @@ def run_flask_app(argv):
     # Debug mode should also be False for this setup unless specifically needed for Flask debugging.
     app.run(host='0.0.0.0', port=FLAGS.port, debug=False, use_reloader=False)
 
+
+@app.route('/image/<string:sha256_hex>', methods=['GET'])
+def get_image(sha256_hex):
+    """Serves an original image file if it exists."""
+    # Validate sha256_hex format (64 hex characters)
+    if not (len(sha256_hex) == 64 and all(c in '0123456789abcdefABCDEF' for c in sha256_hex)):
+        logging.warning(f"Invalid SHA256 format requested for full image: {sha256_hex}")
+        abort(400, description="Invalid SHA256 format.")
+
+    storage_dir_abs_path = app.config.get('STORAGE_DIR')
+    if not storage_dir_abs_path:
+        logging.error("Storage directory not configured in the application.")
+        abort(500, description="Server configuration error: Storage directory not set.")
+
+    with MEDIA_DATA_LOCK:
+        # Make a copy to prevent issues if the cache is updated while we are reading
+        media_item = MEDIA_DATA_CACHE.get(sha256_hex, {}).copy()
+
+    if not media_item or 'file_path' not in media_item:
+        logging.info(f"Image SHA not found in cache: {sha256_hex}")
+        abort(404, description="Image not found.")
+
+    # file_path from cache is relative to storage_dir
+    relative_file_path = media_item['file_path']
+
+    # Basic path sanitization check: ensure the relative path doesn't try to escape.
+    # os.path.normpath will collapse ".." and "." components.
+    # If after normalization, the path starts with "..", it's an attempt to go above storage_dir.
+    # This is an additional check, as send_from_directory should also prevent traversal.
+    normalized_relative_path = os.path.normpath(relative_file_path)
+    if normalized_relative_path.startswith("..") or os.path.isabs(normalized_relative_path):
+        logging.error(f"Invalid file path detected for SHA {sha256_hex}: {relative_file_path} (normalized: {normalized_relative_path})")
+        abort(400, description="Invalid file path.")
+
+    # Import Werkzeug's NotFound exception
+    from werkzeug.exceptions import NotFound
+
+    try:
+        # `send_from_directory` expects the directory and the filename separately.
+        # The `relative_file_path` is relative to `storage_dir_abs_path`.
+        # `send_from_directory` will join `storage_dir_abs_path` and `relative_file_path`.
+        logging.info(f"Attempting to serve image: {relative_file_path} from {storage_dir_abs_path}")
+        return send_from_directory(storage_dir_abs_path, normalized_relative_path)
+    except NotFound:
+        logging.info(f"Image file not found via send_from_directory: {normalized_relative_path} in {storage_dir_abs_path}")
+        abort(404, description="Image file not found on disk.")
+    except Exception as e:
+        logging.error(f"Unexpected error serving image {normalized_relative_path}: {e}", exc_info=True)
+        abort(500, description="Internal server error while serving image.")
+
 def main_flask():
     # absl.app.run will parse flags and then call run_flask_app
     absl_app.run(run_flask_app)

@@ -252,10 +252,10 @@ def scan_directory(storage_dir: str,
                             current_media_data[sha256_hex] = {
                                 'filename': filename,
                                 'last_modified': last_modified,
-                                'file_path': file_path,  # Store full path
+                                'file_path': os.path.relpath(file_path, storage_dir),  # Store path relative to storage_dir
                                 'original_creation_date': original_creation_date
                             }
-                            logging.debug(f"Added/Updated map for: {filename} (SHA256: {sha256_hex}) at path {file_path}")
+                            logging.debug(f"Added/Updated map for: {filename} (SHA256: {sha256_hex}) at relative path {os.path.relpath(file_path, storage_dir)}")
                         except OSError as e:
                             logging.error(f"Could not get metadata for new/updated file {file_path}: {e}")
             else:
