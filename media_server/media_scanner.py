@@ -3,7 +3,8 @@ import hashlib
 import mimetypes
 from absl import logging
 from typing import Dict, Optional, Tuple
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ExifTags
+from datetime import datetime
 
 # Initialize mimetypes database
 mimetypes.init()
@@ -222,10 +223,37 @@ def scan_directory(storage_dir: str,
                        current_media_data[sha256_hex].get('file_path') != file_path: # Handle hash collisions or different paths
                         try:
                             last_modified = os.path.getmtime(file_path)
+                            filesystem_creation_time = os.path.getctime(file_path)
+                            original_creation_date = filesystem_creation_time # Default
+
+                            if mime_type and mime_type.startswith('image/'):
+                                try:
+                                    with Image.open(file_path) as img:
+                                        exif_data = img._getexif()
+                                        if exif_data:
+                                            # Tag ID for DateTimeOriginal
+                                            date_time_original_tag = 36867
+                                            if date_time_original_tag in exif_data:
+                                                exif_date_str = exif_data[date_time_original_tag]
+                                                # EXIF date format is typically 'YYYY:MM:DD HH:MM:SS'
+                                                dt_object = datetime.strptime(exif_date_str, '%Y:%m:%d %H:%M:%S')
+                                                original_creation_date = dt_object.timestamp()
+                                                logging.debug(f"Found EXIF DateTimeOriginal for {filename}: {exif_date_str}")
+                                            else:
+                                                logging.debug(f"EXIF DateTimeOriginal tag not found for {filename}. Using filesystem creation time.")
+                                        else:
+                                            logging.debug(f"No EXIF data found for {filename}. Using filesystem creation time.")
+                                except Exception as exif_e:
+                                    logging.warning(f"Could not read or parse EXIF for {file_path}: {exif_e}. Using filesystem creation time.")
+                            else:
+                                logging.debug(f"Not an image or no MIME type for {filename}, using filesystem creation time for original_creation_date.")
+
+
                             current_media_data[sha256_hex] = {
                                 'filename': filename,
                                 'last_modified': last_modified,
-                                'file_path': file_path  # Store full path
+                                'file_path': file_path,  # Store full path
+                                'original_creation_date': original_creation_date
                             }
                             logging.debug(f"Added/Updated map for: {filename} (SHA256: {sha256_hex}) at path {file_path}")
                         except OSError as e:
