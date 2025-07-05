@@ -26,7 +26,7 @@ try:
     # otherwise, tests or other modules might define/use them differently.
     if __name__ == "__main__":
         flags.mark_flag_as_required('storage_dir')
-except flags.FlagsError:
+except flags.Error:
     pass # Flags are already defined
 
 # Global variable to store media data and a lock for thread-safe access
