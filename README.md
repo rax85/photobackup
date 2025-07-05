@@ -1,5 +1,7 @@
 # Media Server
 
+[![Python application](https://github.com/rax85/photobackup/actions/workflows/python-app.yml/badge.svg)](https://github.com/rax85/photobackup/actions/workflows/python-app.yml)
+
 A simple HTTP server that scans a specified directory for media files (images and videos)
 and provides a JSON list of these files along with their SHA256 hash and last modified time.
 
