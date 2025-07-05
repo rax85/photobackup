@@ -60,3 +60,51 @@ Example response:
     -   **Success (200 OK)**: Returns the thumbnail image with `Content-Type: image/png`.
     -   **Not Found (404 Not Found)**: Returned if the SHA256 hash is unknown, if the corresponding media file does not have a thumbnail (e.g., it's a video or thumbnail generation failed), or if the thumbnail directory is missing.
     -   **Bad Request (400 Bad Request)**: Returned if the provided `<sha256_hex>` is not a valid SHA256 hash format.
+
+-   **PUT /image/<filename>**
+    -   **Purpose**: Uploads a new image file.
+    -   **Method**: `PUT`
+    -   **URL Parameters**:
+        -   `<filename>`: The desired original filename for the uploaded image (e.g., `myphoto.jpg`). This will be sanitized and used as the base for the stored filename.
+    -   **Request Body**: `multipart/form-data` with a single file part named `file`.
+        -   Example using `curl`: `curl -X PUT -F "file=@/path/to/local/image.jpg" http://localhost:8000/image/image.jpg`
+    -   **Behavior**:
+        -   The server calculates the SHA256 hash of the uploaded image.
+        -   If an image with the same SHA256 hash already exists in the system, the operation is a no-op for storage, and details of the existing image are returned (Status 200).
+        -   If new content, the image is saved into a dated subdirectory within the `storage_dir` (e.g., `storage_dir/uploads/YYYYMMDD/`).
+        -   Filename collisions within the target directory are handled by appending a numeric suffix (e.g., `filename_1.jpg`).
+        -   A thumbnail is generated and stored in the `.thumbnails` directory, named by the image's SHA256 hash.
+        -   The media cache is updated with metadata for the new image.
+    -   **Success Response (201 Created)**:
+        ```json
+        {
+          "message": "Image uploaded successfully.",
+          "sha256": "actual_sha256_hash_of_image",
+          "filename": "stored_filename.jpg", // Actual filename on disk (possibly suffixed)
+          "file_path": "uploads/YYYYMMDD/stored_filename.jpg", // Relative to storage_dir
+          "thumbnail_file": "actual_sha256_hash_of_image.png"
+        }
+        ```
+    -   **Success Response (200 OK - Content Exists)**:
+        ```json
+        {
+          "message": "Image content already exists.",
+          "sha256": "existing_sha256_hash",
+          "filename": "existing_filename.jpg",
+          "file_path": "path/to/existing_file.jpg"
+        }
+        ```
+    -   **Error Responses**:
+        -   `400 Bad Request`: If no file part, no selected file, invalid file type (only 'png', 'jpg', 'jpeg', 'gif' allowed).
+        -   `500 Internal Server Error`: If there's an issue saving the file or server configuration error.
+
+-   **GET /image/<sha256_hex>**
+    -   **Purpose**: Retrieves an image file based on its SHA256 hash.
+    -   **Method**: `GET`
+    -   **URL Parameters**:
+        -   `<sha256_hex>`: The SHA256 hash of the image to retrieve. Must be 64 hexadecimal characters.
+    -   **Success Response (200 OK)**: Returns the raw image file with the appropriate `Content-Type`.
+    -   **Error Responses**:
+        -   `400 Bad Request`: If the `<sha256_hex>` format is invalid.
+        -   `404 Not Found`: If no image with the given SHA256 hash is found in the cache, or if the cached file path does not exist on disk.
+        -   `500 Internal Server Error`: If there's a server configuration error or other unexpected issue.
