@@ -1,0 +1,5 @@
+# For development and running tests
+requests
+# Add other testing specific dependencies here, e.g.
+# pytest
+# coverage
