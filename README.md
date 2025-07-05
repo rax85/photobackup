@@ -53,3 +53,10 @@ Example response:
 }
 ```
 **Note:** The `"file_path"` and `"original_creation_date"` fields are included in the response objects. The `original_creation_date` will be derived from EXIF for images where possible.
+
+-   **GET /thumbnail/<sha256_hex>**: Returns the thumbnail image (PNG) for the
+    given SHA256 hash if it exists.
+    -   `<sha256_hex>`: The SHA256 hash of the original media file. Must be 64 hexadecimal characters.
+    -   **Success (200 OK)**: Returns the thumbnail image with `Content-Type: image/png`.
+    -   **Not Found (404 Not Found)**: Returned if the SHA256 hash is unknown, if the corresponding media file does not have a thumbnail (e.g., it's a video or thumbnail generation failed), or if the thumbnail directory is missing.
+    -   **Bad Request (400 Bad Request)**: Returned if the provided `<sha256_hex>` is not a valid SHA256 hash format.
