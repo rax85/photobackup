@@ -229,7 +229,7 @@ def scan_directory(storage_dir: str,
                             if mime_type and mime_type.startswith('image/'):
                                 try:
                                     with Image.open(file_path) as img:
-                                        exif_data = img._getexif()
+                                        exif_data = img.getexif()
                                         if exif_data:
                                             # Tag ID for DateTimeOriginal
                                             date_time_original_tag = 36867
