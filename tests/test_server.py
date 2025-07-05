@@ -4,7 +4,10 @@ import shutil
 import tempfile
 import json
 import time
-from unittest import mock # For mocking time.sleep if needed later
+from unittest import mock
+import io # For BytesIO for file uploads
+import hashlib # For SHA256 verification
+from datetime import datetime # For checking YYYYMMDD subdirectories
 
 # Add project root to sys.path
 import sys
@@ -351,3 +354,217 @@ class TestServerFlaskBackgroundScanning(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestImageEndpoints(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not media_server_module.FLAGS.is_parsed():
+            media_server_module.FLAGS([sys.argv[0], '--storage_dir=/tmp/dummy_for_img_parse'])
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="media_server_image_test_")
+        flask_app.config['TESTING'] = True
+        flask_app.config['STORAGE_DIR'] = self.test_dir
+        flask_app.config['THUMBNAIL_DIR'] = os.path.join(self.test_dir, media_scanner.THUMBNAIL_DIR_NAME)
+
+        # Ensure .thumbnails directory exists within the temp test_dir
+        os.makedirs(flask_app.config['THUMBNAIL_DIR'], exist_ok=True)
+
+        media_server_module.FLAGS.storage_dir = self.test_dir
+        media_server_module.FLAGS.rescan_interval = 0
+
+        self.client = flask_app.test_client()
+
+        # Clear cache before each test
+        with MEDIA_DATA_LOCK:
+            MEDIA_DATA_CACHE.clear()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+        with MEDIA_DATA_LOCK:
+            MEDIA_DATA_CACHE.clear()
+
+    def _create_dummy_image_bytes(self, text_content="dummy_image", format="PNG"):
+        """Creates dummy image bytes and returns them along with their SHA256 hash."""
+        img_byte_arr = io.BytesIO()
+        # Create a very simple image using PIL to ensure it's a valid format
+        try:
+            dummy_pil_img = Image.new('RGB', (100, 50), color = 'blue') # Slightly larger
+            # Add some text to make content unique if needed for different SHAs
+            from PIL import ImageDraw # Import here, as it's specific to this try block
+            draw = ImageDraw.Draw(dummy_pil_img)
+            # Use text_content to make image bytes different
+            draw.text((10,10), text_content, fill=(255,255,0))
+            dummy_pil_img.save(img_byte_arr, format=format.upper())
+            img_byte_arr.seek(0)
+            content_bytes = img_byte_arr.read()
+            img_byte_arr.seek(0) # Reset for upload
+            sha256 = hashlib.sha256(content_bytes).hexdigest()
+            return img_byte_arr, content_bytes, sha256
+        except ImportError: # Fallback if PIL is not available (should be for server, but test safety)
+            content_bytes = text_content.encode('utf-8') * 10 # Make it a bit larger
+            sha256 = hashlib.sha256(content_bytes).hexdigest()
+            return io.BytesIO(content_bytes), content_bytes, sha256
+
+
+    def test_put_image_success_new_image(self):
+        """Test successful upload of a new image."""
+        image_name = "test_image.png"
+        img_data, img_content_bytes, img_sha256 = self._create_dummy_image_bytes(text_content=image_name)
+
+        response = self.client.put(
+            f'/image/{image_name}',
+            data={'file': (img_data, image_name)},
+            content_type='multipart/form-data'
+        )
+        self.assertEqual(response.status_code, 201)
+        json_response = response.json
+        self.assertEqual(json_response['sha256'], img_sha256)
+        self.assertEqual(json_response['filename'], image_name)
+
+        # Verify file saved in dated subdirectory
+        today_str = datetime.now().strftime('%Y%m%d')
+        expected_file_dir = os.path.join(self.test_dir, "uploads", today_str)
+        expected_file_path = os.path.join(expected_file_dir, image_name)
+        self.assertTrue(os.path.exists(expected_file_path))
+        with open(expected_file_path, "rb") as f:
+            self.assertEqual(f.read(), img_content_bytes)
+
+        # Verify cache
+        with MEDIA_DATA_LOCK:
+            self.assertIn(img_sha256, MEDIA_DATA_CACHE)
+            cache_entry = MEDIA_DATA_CACHE[img_sha256]
+            self.assertEqual(cache_entry['filename'], image_name)
+            self.assertEqual(cache_entry['original_filename'], image_name)
+            self.assertEqual(cache_entry['file_path'], os.path.join("uploads", today_str, image_name))
+            self.assertIsNotNone(cache_entry['thumbnail_file'])
+
+        # Verify thumbnail generated
+        expected_thumbnail_path = os.path.join(flask_app.config['THUMBNAIL_DIR'], f"{img_sha256}.png")
+        self.assertTrue(os.path.exists(expected_thumbnail_path))
+
+    def test_put_image_filename_collision(self):
+        """Test filename collision: upload two different images with the same initial filename."""
+        image_name = "collision.jpg"
+        img_data1, _, img_sha1 = self._create_dummy_image_bytes(text_content="image_v1")
+        img_data2, _, img_sha2 = self._create_dummy_image_bytes(text_content="image_v2")
+        self.assertNotEqual(img_sha1, img_sha2) # Ensure contents are different
+
+        # Upload first image
+        self.client.put(f'/image/{image_name}', data={'file': (img_data1, image_name)}, content_type='multipart/form-data')
+
+        # Upload second image with same desired name
+        response = self.client.put(f'/image/{image_name}', data={'file': (img_data2, 'another_original_name.jpg')}, content_type='multipart/form-data')
+        self.assertEqual(response.status_code, 201)
+        json_response = response.json
+
+        suffixed_filename = "collision_1.jpg" # Expected suffixed name
+        self.assertEqual(json_response['filename'], suffixed_filename)
+        self.assertEqual(json_response['sha256'], img_sha2)
+
+        today_str = datetime.now().strftime('%Y%m%d')
+        expected_path1 = os.path.join(self.test_dir, "uploads", today_str, image_name)
+        expected_path2 = os.path.join(self.test_dir, "uploads", today_str, suffixed_filename)
+        self.assertTrue(os.path.exists(expected_path1))
+        self.assertTrue(os.path.exists(expected_path2))
+
+        with MEDIA_DATA_LOCK:
+            self.assertIn(img_sha1, MEDIA_DATA_CACHE)
+            self.assertIn(img_sha2, MEDIA_DATA_CACHE)
+            self.assertEqual(MEDIA_DATA_CACHE[img_sha1]['filename'], image_name)
+            self.assertEqual(MEDIA_DATA_CACHE[img_sha2]['filename'], suffixed_filename)
+            self.assertEqual(MEDIA_DATA_CACHE[img_sha2]['original_filename'], image_name) # from URL
+
+    def test_put_image_duplicate_content(self):
+        """Test uploading an image whose content (SHA256) already exists."""
+        image_name1 = "original.png"
+        image_name2 = "duplicate_content.png"
+        img_data, img_content_bytes, img_sha256 = self._create_dummy_image_bytes("same_content")
+
+        # Upload first image
+        res1 = self.client.put(f'/image/{image_name1}', data={'file': (img_data, image_name1)}, content_type='multipart/form-data')
+        self.assertEqual(res1.status_code, 201)
+
+        # Attempt to upload same content with a different name
+        # Re-create BytesIO for the second upload as the first one might be closed
+        img_data_for_res2 = io.BytesIO(img_content_bytes)
+        res2 = self.client.put(f'/image/{image_name2}', data={'file': (img_data_for_res2, image_name2)}, content_type='multipart/form-data')
+        self.assertEqual(res2.status_code, 200) # Should be no-op for storage
+        json_response = res2.json
+        self.assertEqual(json_response['sha256'], img_sha256)
+        # The returned filename/path should be of the *first* instance of this SHA
+        self.assertEqual(json_response['filename'], image_name1)
+
+        today_str = datetime.now().strftime('%Y%m%d')
+        expected_file_path1 = os.path.join(self.test_dir, "uploads", today_str, image_name1)
+        expected_file_path2 = os.path.join(self.test_dir, "uploads", today_str, image_name2)
+        self.assertTrue(os.path.exists(expected_file_path1))
+        self.assertFalse(os.path.exists(expected_file_path2)) # Second file should not have been saved
+
+        with MEDIA_DATA_LOCK:
+            self.assertEqual(len(MEDIA_DATA_CACHE), 1) # Only one entry for this content
+            self.assertEqual(MEDIA_DATA_CACHE[img_sha256]['filename'], image_name1)
+
+    def test_put_image_invalid_file_type(self):
+        """Test uploading a non-image file."""
+        txt_data = io.BytesIO(b"this is not an image")
+        response = self.client.put('/image/textfile.txt', data={'file': (txt_data, 'textfile.txt')}, content_type='multipart/form-data')
+        self.assertEqual(response.status_code, 400)
+
+    def test_put_image_no_file_part(self):
+        response = self.client.put('/image/someimage.jpg', data={}, content_type='multipart/form-data')
+        self.assertEqual(response.status_code, 400)
+
+    def test_put_image_empty_filename_in_form(self):
+        img_data, _, _ = self._create_dummy_image_bytes()
+        response = self.client.put('/image/someimage.jpg', data={'file': (img_data, '')}, content_type='multipart/form-data')
+        self.assertEqual(response.status_code, 400) # "No selected file"
+
+    def test_get_image_success(self):
+        """Test retrieving an image successfully uploaded via PUT."""
+        image_name = "retrievable.jpg"
+        img_data, img_content_bytes, img_sha256 = self._create_dummy_image_bytes(text_content="retrievable_content", format="JPEG")
+
+        # Upload the image first
+        put_response = self.client.put(
+            f'/image/{image_name}',
+            data={'file': (img_data, image_name)},
+            content_type='multipart/form-data'
+        )
+        self.assertEqual(put_response.status_code, 201)
+
+        # Now try to GET it
+        get_response = self.client.get(f'/image/{img_sha256}')
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.data, img_content_bytes)
+        self.assertIn('image/jpeg', get_response.content_type.lower())
+
+    def test_get_image_unknown_sha(self):
+        response = self.client.get('/image/' + 'a'*64) # Valid format, unknown SHA
+        self.assertEqual(response.status_code, 404)
+
+    def test_get_image_invalid_sha_format(self):
+        response = self.client.get('/image/invalidsha123')
+        self.assertEqual(response.status_code, 400)
+
+    def test_get_image_file_deleted_after_cache(self):
+        """Test GET when file is deleted from disk after being cached."""
+        image_name = "to_be_deleted.png"
+        img_data, _, img_sha256 = self._create_dummy_image_bytes("delete_me")
+
+        put_res = self.client.put(f'/image/{image_name}', data={'file': (img_data, image_name)}, content_type='multipart/form-data')
+        self.assertEqual(put_res.status_code, 201)
+
+        # Manually delete the file from storage
+        with MEDIA_DATA_LOCK: # Access cache safely
+            cached_entry = MEDIA_DATA_CACHE.get(img_sha256)
+            self.assertIsNotNone(cached_entry)
+            file_to_delete_abs = os.path.join(flask_app.config['STORAGE_DIR'], cached_entry['file_path'])
+
+        self.assertTrue(os.path.exists(file_to_delete_abs))
+        os.remove(file_to_delete_abs)
+        self.assertFalse(os.path.exists(file_to_delete_abs))
+
+        get_response = self.client.get(f'/image/{img_sha256}')
+        self.assertEqual(get_response.status_code, 404) # send_from_directory should cause NotFound -> 404

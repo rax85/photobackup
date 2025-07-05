@@ -2,3 +2,4 @@ absl-py
 requests
 Pillow
 Flask
+Werkzeug
