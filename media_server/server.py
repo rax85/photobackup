@@ -40,6 +40,12 @@ MEDIA_DATA_LOCK = threading.Lock()
 # Create Flask app instance
 app = Flask(__name__)
 
+def reset_media_data_cache():
+    """Clears the global MEDIA_DATA_CACHE in a thread-safe manner."""
+    with MEDIA_DATA_LOCK:
+        MEDIA_DATA_CACHE.clear()
+        logging.debug("MEDIA_DATA_CACHE has been reset.")
+
 def background_scanner_task():
     """Periodically rescans the storage directory and updates the cache."""
     global MEDIA_DATA_CACHE

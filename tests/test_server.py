@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 # Import the Flask app instance from the server module
 from media_server.server import app as flask_app # aliasing to avoid conflict
-from media_server.server import MEDIA_DATA_CACHE, MEDIA_DATA_LOCK # Direct access for tests
+from media_server.server import MEDIA_DATA_CACHE, MEDIA_DATA_LOCK, reset_media_data_cache # Direct access for tests
 from media_server import media_scanner # To get expected data
 from media_server import server as media_server_module # For FLAGS access
 from PIL import Image # For creating dummy image files
@@ -91,11 +91,16 @@ class TestServerFlaskIntegration(unittest.TestCase):
 
         # Perform initial scan to populate MEDIA_DATA_CACHE, simulating server startup
         # This scan will also generate thumbnails for image1.jpg
+        reset_media_data_cache() # Ensure cache is clean before class setup populates it
+        # The scan_directory is called without MEDIA_DATA_LOCK here because it's class setup,
+        # not concurrent execution. The function itself doesn't lock MEDIA_DATA_CACHE.
+        # The update to MEDIA_DATA_CACHE should be locked if there's any theoretical concurrency.
+        # However, for test setup, direct assignment after reset is fine.
+        initial_scan_data = media_scanner.scan_directory(cls.test_dir, rescan=False)
         with MEDIA_DATA_LOCK:
-            MEDIA_DATA_CACHE.clear() # Clear from previous tests if any
-            MEDIA_DATA_CACHE.update(media_scanner.scan_directory(cls.test_dir, rescan=False))
+            MEDIA_DATA_CACHE.update(initial_scan_data)
 
-        cls.expected_media_data_after_setup = MEDIA_DATA_CACHE.copy()
+        cls.expected_media_data_after_setup = initial_scan_data.copy() # Store the data, not the cache reference
         # Store the SHA256 of the image for thumbnail tests
         cls.img1_sha256 = None
         for sha, data in cls.expected_media_data_after_setup.items():
@@ -117,17 +122,16 @@ class TestServerFlaskIntegration(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls.test_dir)
-        with MEDIA_DATA_LOCK:
-            MEDIA_DATA_CACHE.clear()
+        reset_media_data_cache() # Clean up after all tests in the class
         # Reset any flags if necessary, though absl flags are tricky to reset fully.
 
     def setUp(self):
-        # Ensure cache is in a known state before each test if tests modify it.
-        # For now, assuming tests either use the class-level setup or manage their own state.
-        # If tests modify MEDIA_DATA_CACHE, they should clean up or use a fresh setup.
-        # For safety, let's reset to initial state for each test, in case some test modifies it.
+        # Ensure cache is in a known state before each test.
+        # Reset and then populate with the specific state needed for this test class.
+        reset_media_data_cache()
         with MEDIA_DATA_LOCK:
-            MEDIA_DATA_CACHE.clear()
+            # MEDIA_DATA_CACHE should be clean here due to reset_media_data_cache()
+            # Populate it with the data prepared during setUpClass
             MEDIA_DATA_CACHE.update(self.expected_media_data_after_setup)
 
 
@@ -217,12 +221,17 @@ class TestServerFlaskIntegration(unittest.TestCase):
         original_storage_dir_app_config = flask_app.config['STORAGE_DIR']
 
         media_server_module.FLAGS.storage_dir = empty_dir
-        flask_app.config['STORAGE_DIR'] = empty_dir
+        flask_app.config['STORAGE_DIR'] = empty_dir # Important for scan_directory
+        flask_app.config['THUMBNAIL_DIR'] = os.path.join(empty_dir, media_scanner.THUMBNAIL_DIR_NAME)
 
-        with MEDIA_DATA_LOCK:
-            MEDIA_DATA_CACHE.clear() # Clear current cache
-            # Simulate initial scan for the empty directory
-            MEDIA_DATA_CACHE.update(media_scanner.scan_directory(empty_dir, rescan=False))
+
+        reset_media_data_cache() # Clear current cache
+        # Simulate initial scan for the empty directory
+        # scan_directory itself doesn't write to global MEDIA_DATA_CACHE
+        empty_scan_data = media_scanner.scan_directory(empty_dir, rescan=False)
+        with MEDIA_DATA_LOCK: # Update global cache if server logic relies on it being pre-populated
+            MEDIA_DATA_CACHE.update(empty_scan_data)
+
 
         response = self.client.get('/list')
         self.assertEqual(response.status_code, 200)
@@ -265,10 +274,14 @@ class TestServerFlaskBackgroundScanning(unittest.TestCase):
         self.img_path1 = create_dummy_file(self.test_dir, "imageA.jpg", self.img_content1, mtime=time.time()-100)
 
         # Initial scan
+        reset_media_data_cache()
+        # The app.config['STORAGE_DIR'] is self.test_dir, set in setUp
+        # The app.config['THUMBNAIL_DIR'] also needs to be set for scan_directory to work correctly
+        flask_app.config['THUMBNAIL_DIR'] = os.path.join(self.test_dir, media_scanner.THUMBNAIL_DIR_NAME)
+        initial_scan_data = media_scanner.scan_directory(self.test_dir, rescan=False)
         with MEDIA_DATA_LOCK:
-            MEDIA_DATA_CACHE.clear()
-            MEDIA_DATA_CACHE.update(media_scanner.scan_directory(self.test_dir, rescan=False))
-        self.initial_cache_state = MEDIA_DATA_CACHE.copy()
+            MEDIA_DATA_CACHE.update(initial_scan_data)
+        self.initial_cache_state = initial_scan_data.copy()
 
 
     def trigger_scan_cycle(self):
@@ -287,8 +300,7 @@ class TestServerFlaskBackgroundScanning(unittest.TestCase):
         # Restore flags
         media_server_module.FLAGS.storage_dir = self.original_flags_storage_dir
         media_server_module.FLAGS.rescan_interval = self.original_flags_rescan_interval
-        with MEDIA_DATA_LOCK:
-            MEDIA_DATA_CACHE.clear()
+        reset_media_data_cache() # Ensure cache is clean after these tests
 
     def test_background_scan_picks_up_new_file(self):
         response1 = self.client.get('/list')
