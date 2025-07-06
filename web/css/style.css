@@ -43,10 +43,12 @@ main {
 
 #gallery-grid { /* This is now the main content area for photos */
     flex-grow: 1; /* Takes up available space */
-    /* The existing grid styles will apply to .gallery-grid-month divs within this */
+    /* This element (#gallery-grid) should stack its .month-section children vertically. */
+    /* No specific display property needed here if it's to behave as a default block container. */
 }
 
-.gallery-grid { /* Base styles for all photo grids */
+/* This class will be applied to the divs within each month-section that hold the photo items */
+.photo-items-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); /* Responsive grid */
     gap: 1rem;
@@ -182,7 +184,7 @@ footer {
         overflow-y: auto; /* Allow scrolling for month links */
     }
 
-    .gallery-grid { /* This applies to .gallery-grid-month as well */
+    .photo-items-grid { /* Responsive adjustments for the photo item grids */
         grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
         gap: 0.5rem;
     }
@@ -196,7 +198,7 @@ footer {
 }
 
 @media (max-width: 480px) {
-    .gallery-grid { /* Applies to .gallery-grid-month */
+    .photo-items-grid { /* Further responsive adjustments for photo item grids */
         grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
     }
      .gallery-item img {

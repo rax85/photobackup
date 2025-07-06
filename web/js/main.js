@@ -97,9 +97,9 @@ document.addEventListener('DOMContentLoaded', () => {
             monthSectionDiv.appendChild(hr);
 
             const monthGridDiv = document.createElement('div');
-            // Apply existing gallery-grid class for base grid styling,
-            // and gallery-grid-month for any month-specific tweaks if needed.
-            monthGridDiv.className = 'gallery-grid gallery-grid-month';
+            // Apply 'photo-items-grid' for the grid layout of thumbnails.
+            // 'gallery-grid-month' can be kept for any additional specific styling for these month-based grids.
+            monthGridDiv.className = 'photo-items-grid gallery-grid-month';
             monthSectionDiv.appendChild(monthGridDiv);
 
             itemsInGroup.forEach((item) => {
