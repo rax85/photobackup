@@ -338,10 +338,12 @@ def scan_directory(storage_dir: str,
                             last_modified = os.path.getmtime(abs_file_path)
                             filesystem_creation_time = os.path.getctime(abs_file_path)
                             original_creation_date = filesystem_creation_time # Default
+                            image_width, image_height = None, None
 
                             if mime_type and mime_type.startswith('image/'):
                                 try:
                                     with Image.open(abs_file_path) as img:
+                                        image_width, image_height = img.size
                                         exif_data = img.getexif()
                                         if exif_data:
                                             date_time_original_tag = 36867 # DateTimeOriginal
@@ -349,8 +351,8 @@ def scan_directory(storage_dir: str,
                                                 exif_date_str = exif_data[date_time_original_tag]
                                                 dt_object = datetime.strptime(exif_date_str, '%Y:%m:%d %H:%M:%S')
                                                 original_creation_date = dt_object.timestamp()
-                                except Exception as exif_e:
-                                    logging.warning(f"Could not read EXIF for {abs_file_path}: {exif_e}. Using filesystem time.")
+                                except Exception as exif_e: # Catching a broader exception here as Image.open can also fail
+                                    logging.warning(f"Could not read EXIF or dimensions for {abs_file_path}: {exif_e}. Using filesystem time for creation_date.")
 
                             entry_data = {
                                 'filename': disk_filename, # Actual name on disk
@@ -358,10 +360,12 @@ def scan_directory(storage_dir: str,
                                 'file_path': rel_file_path,
                                 'last_modified': last_modified,
                                 'original_creation_date': original_creation_date,
-                                'thumbnail_file': thumbnail_relative_path # Store the relative path
+                                'thumbnail_file': thumbnail_relative_path, # Store the relative path
+                                'width': image_width,
+                                'height': image_height
                             }
                             current_media_data[sha256_hex] = entry_data
-                            logging.debug(f"Cache ADDED/UPDATED for SHA: {sha256_hex}, file: {disk_filename}, path: {rel_file_path}, thumb: {thumbnail_relative_path}")
+                            logging.debug(f"Cache ADDED/UPDATED for SHA: {sha256_hex}, file: {disk_filename}, path: {rel_file_path}, thumb: {thumbnail_relative_path}, W: {image_width}, H: {image_height}")
                             # Add to known_file_paths if it's a new path being processed in this walk
                             known_file_paths.add(rel_file_path)
 
