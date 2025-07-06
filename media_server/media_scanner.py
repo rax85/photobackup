@@ -42,21 +42,33 @@ def generate_thumbnail(source_image_path: str,
 
     Args:
         source_image_path: Path to the original image.
-        thumbnail_dir: Directory where thumbnails are stored.
+        thumbnail_dir: Base directory where thumbnails are stored (e.g., .../.thumbnails).
         sha256_hex: SHA256 hash of the original image, used as thumbnail filename.
         target_size: A tuple (width, height) for the thumbnail.
 
     Returns:
-        Path to the generated thumbnail, or None if generation failed.
+        Relative path to the generated thumbnail within the base thumbnail_dir
+        (e.g., 'ab/abcdef123...png'), or None if generation failed.
     """
-    thumbnail_filename = sha256_hex + THUMBNAIL_EXTENSION
-    thumbnail_path = os.path.join(thumbnail_dir, thumbnail_filename)
+    if not sha256_hex or len(sha256_hex) < 2:
+        logging.error(f"Invalid sha256_hex for thumbnail generation: {sha256_hex}")
+        return None
 
-    if os.path.exists(thumbnail_path):
-        # Could add mtime check here if we want to update existing thumbnails
-        # For now, if it exists, we assume it's correct.
-        logging.debug(f"Thumbnail already exists: {thumbnail_path}")
-        return thumbnail_path
+    sha256_prefix = sha256_hex[:2]
+    thumbnail_subdir = os.path.join(thumbnail_dir, sha256_prefix)
+    os.makedirs(thumbnail_subdir, exist_ok=True)
+
+    thumbnail_filename_only = sha256_hex + THUMBNAIL_EXTENSION
+    # Store the path relative to the main thumbnail_dir (e.g. .thumbnails/ab/hash.png)
+    # The thumbnail_path is the full absolute path for saving
+    thumbnail_path_absolute = os.path.join(thumbnail_subdir, thumbnail_filename_only)
+    # The path to be returned and stored in cache should be relative to thumbnail_dir
+    thumbnail_path_relative_to_basedir = os.path.join(sha256_prefix, thumbnail_filename_only)
+
+
+    if os.path.exists(thumbnail_path_absolute):
+        logging.debug(f"Thumbnail already exists: {thumbnail_path_absolute}")
+        return thumbnail_path_relative_to_basedir
 
     try:
         with Image.open(source_image_path) as img:
@@ -74,9 +86,9 @@ def generate_thumbnail(source_image_path: str,
 
             final_thumb.paste(img, (paste_x, paste_y))
 
-            final_thumb.save(thumbnail_path, "PNG")
-            logging.info(f"Generated thumbnail: {thumbnail_path} for {source_image_path}")
-            return thumbnail_path
+            final_thumb.save(thumbnail_path_absolute, "PNG")
+            logging.info(f"Generated thumbnail: {thumbnail_path_absolute} for {source_image_path}")
+            return thumbnail_path_relative_to_basedir
     except FileNotFoundError:
         logging.error(f"Source image not found for thumbnail generation: {source_image_path}")
         return None
@@ -139,26 +151,32 @@ def scan_directory(storage_dir: str,
                 logging.info(f"File for SHA {sha256_hex} (path: {data.get('file_path', 'unknown')}) no longer exists. Removing.")
                 shas_to_remove.append(sha256_hex)
                 # Delete corresponding thumbnail
-                thumbnail_filename_from_cache = data.get('thumbnail_file')
-                if thumbnail_filename_from_cache: # Only attempt delete if a name exists
-                    thumbnail_to_delete = os.path.join(thumbnail_dir_path, thumbnail_filename_from_cache)
-                    if os.path.exists(thumbnail_to_delete):
+                thumbnail_relative_path_from_cache = data.get('thumbnail_file') # This should be like 'ab/hash.png'
+                if thumbnail_relative_path_from_cache:
+                    thumbnail_to_delete_abs = os.path.join(thumbnail_dir_path, thumbnail_relative_path_from_cache)
+                    if os.path.exists(thumbnail_to_delete_abs):
                         try:
-                            os.remove(thumbnail_to_delete)
-                            logging.info(f"Deleted thumbnail: {thumbnail_to_delete}")
+                            os.remove(thumbnail_to_delete_abs)
+                            logging.info(f"Deleted thumbnail: {thumbnail_to_delete_abs}")
                         except OSError as e:
-                            logging.error(f"Error deleting thumbnail {thumbnail_to_delete}: {e}")
+                            logging.error(f"Error deleting thumbnail {thumbnail_to_delete_abs}: {e}")
                 else:
-                    # If thumbnail_file is None or not in cache, construct a default name to check,
-                    # as older cache entries might not have `thumbnail_file`
-                    default_thumbnail_name = f"{sha256_hex}{THUMBNAIL_EXTENSION}"
-                    thumbnail_to_delete = os.path.join(thumbnail_dir_path, default_thumbnail_name)
-                    if os.path.exists(thumbnail_to_delete):
+                    # Fallback for older cache entries or if thumbnail_file was None/incorrectly stored
+                    # This part might need careful handling if migrating from old format
+                    sha256_prefix = sha256_hex[:2]
+                    default_thumbnail_filename_only = f"{sha256_hex}{THUMBNAIL_EXTENSION}"
+                    # Try new path structure first
+                    potential_thumbnail_path = os.path.join(thumbnail_dir_path, sha256_prefix, default_thumbnail_filename_only)
+                    if not os.path.exists(potential_thumbnail_path):
+                        # Try old path structure (flat directory) as a fallback for migration
+                        potential_thumbnail_path = os.path.join(thumbnail_dir_path, default_thumbnail_filename_only)
+
+                    if os.path.exists(potential_thumbnail_path):
                         try:
-                            os.remove(thumbnail_to_delete)
-                            logging.info(f"Deleted thumbnail (default name): {thumbnail_to_delete}")
+                            os.remove(potential_thumbnail_path)
+                            logging.info(f"Deleted thumbnail (fallback path logic): {potential_thumbnail_path}")
                         except OSError as e:
-                            logging.error(f"Error deleting thumbnail (default name) {thumbnail_to_delete}: {e}")
+                            logging.error(f"Error deleting thumbnail (fallback path logic) {potential_thumbnail_path}: {e}")
                 continue
 
             try:
@@ -170,69 +188,88 @@ def scan_directory(storage_dir: str,
                     if new_sha256_hex and new_sha256_hex != sha256_hex:
                         shas_to_remove.append(sha256_hex)
                         logging.debug(f"SHA changed for {data.get('filename', 'unknown')}. Old: {sha256_hex}, New: {new_sha256_hex}. Old entry removed.")
-                        old_thumb_name_from_cache = data.get('thumbnail_file')
-                        if old_thumb_name_from_cache:
-                            old_thumbnail_to_delete = os.path.join(thumbnail_dir_path, old_thumb_name_from_cache)
-                            if os.path.exists(old_thumbnail_to_delete):
+                        old_thumbnail_relative_path = data.get('thumbnail_file') # e.g. 'ab/hash.png'
+                        if old_thumbnail_relative_path:
+                            old_thumbnail_to_delete_abs = os.path.join(thumbnail_dir_path, old_thumbnail_relative_path)
+                            if os.path.exists(old_thumbnail_to_delete_abs):
                                 try:
-                                    os.remove(old_thumbnail_to_delete)
-                                    logging.info(f"Deleted old thumbnail: {old_thumbnail_to_delete}")
+                                    os.remove(old_thumbnail_to_delete_abs)
+                                    logging.info(f"Deleted old thumbnail: {old_thumbnail_to_delete_abs}")
                                 except OSError as e:
-                                    logging.error(f"Error deleting old thumbnail {old_thumbnail_to_delete}: {e}")
-                        else: # Fallback for older cache entries or if thumbnail_file was None
-                            default_old_thumb_name = f"{sha256_hex}{THUMBNAIL_EXTENSION}"
-                            old_thumbnail_to_delete = os.path.join(thumbnail_dir_path, default_old_thumb_name)
-                            if os.path.exists(old_thumbnail_to_delete):
+                                    logging.error(f"Error deleting old thumbnail {old_thumbnail_to_delete_abs}: {e}")
+                        else: # Fallback logic if path not in cache or for old format
+                            old_sha256_prefix = sha256_hex[:2]
+                            default_old_thumb_filename_only = f"{sha256_hex}{THUMBNAIL_EXTENSION}"
+                            # Try new path structure first
+                            potential_old_thumb_path = os.path.join(thumbnail_dir_path, old_sha256_prefix, default_old_thumb_filename_only)
+                            if not os.path.exists(potential_old_thumb_path):
+                                # Try old path structure (flat directory)
+                                potential_old_thumb_path = os.path.join(thumbnail_dir_path, default_old_thumb_filename_only)
+
+                            if os.path.exists(potential_old_thumb_path):
                                 try:
-                                    os.remove(old_thumbnail_to_delete)
-                                    logging.info(f"Deleted old thumbnail (default name): {old_thumbnail_to_delete}")
+                                    os.remove(potential_old_thumb_path)
+                                    logging.info(f"Deleted old thumbnail (fallback path logic): {potential_old_thumb_path}")
                                 except OSError as e:
-                                    logging.error(f"Error deleting old thumbnail (default name) {old_thumbnail_to_delete}: {e}")
-                        # New entry will be added by the walk phase.
-                    elif new_sha256_hex == sha256_hex:
+                                    logging.error(f"Error deleting old thumbnail (fallback path logic) {potential_old_thumb_path}: {e}")
+                        # New entry (and its thumbnail) will be added by the walk phase if the new SHA is valid.
+                    elif new_sha256_hex == sha256_hex: # SHA is same, only mtime changed
                         current_media_data[sha256_hex]['last_modified'] = current_last_modified
                         logging.debug(f"Timestamp updated for {data.get('filename')} (SHA: {sha256_hex})")
-                    elif not new_sha256_hex: # Error hashing
-                        shas_to_remove.append(sha256_hex)
-                        thumb_name_from_cache = data.get('thumbnail_file')
-                        if thumb_name_from_cache:
-                            thumbnail_to_delete = os.path.join(thumbnail_dir_path, thumb_name_from_cache)
-                            if os.path.exists(thumbnail_to_delete):
+                        # Potentially regenerate thumbnail if it's missing, though generate_thumbnail handles "exists"
+                        # If thumbnail_file is not in data, or is None, it might mean it failed before.
+                        if not data.get('thumbnail_file') and (mime_type := mimetypes.guess_type(abs_file_path_to_check)[0]) and mime_type.startswith('image/'):
+                            logging.info(f"Attempting to regenerate missing thumbnail for modified file: {abs_file_path_to_check}")
+                            new_thumb_rel_path = generate_thumbnail(abs_file_path_to_check, thumbnail_dir_path, sha256_hex)
+                            if new_thumb_rel_path:
+                                current_media_data[sha256_hex]['thumbnail_file'] = new_thumb_rel_path
+                    elif not new_sha256_hex: # Error hashing the modified file
+                        shas_to_remove.append(sha256_hex) # Remove old entry
+                        thumb_relative_path_from_cache = data.get('thumbnail_file')
+                        if thumb_relative_path_from_cache:
+                            thumbnail_to_delete_abs = os.path.join(thumbnail_dir_path, thumb_relative_path_from_cache)
+                            if os.path.exists(thumbnail_to_delete_abs):
                                 try:
-                                    os.remove(thumbnail_to_delete)
-                                    logging.info(f"Deleted thumbnail due to hashing error: {thumbnail_to_delete}")
+                                    os.remove(thumbnail_to_delete_abs)
+                                    logging.info(f"Deleted thumbnail (hashing error for modified file): {thumbnail_to_delete_abs}")
                                 except OSError as e:
-                                    logging.error(f"Error deleting thumbnail {thumbnail_to_delete}: {e}")
+                                    logging.error(f"Error deleting thumbnail {thumbnail_to_delete_abs}: {e}")
                         else: # Fallback
-                            default_thumb_name = f"{sha256_hex}{THUMBNAIL_EXTENSION}"
-                            thumbnail_to_delete = os.path.join(thumbnail_dir_path, default_thumb_name)
-                            if os.path.exists(thumbnail_to_delete):
+                            sha256_prefix = sha256_hex[:2]
+                            default_thumb_filename_only = f"{sha256_hex}{THUMBNAIL_EXTENSION}"
+                            potential_thumb_path = os.path.join(thumbnail_dir_path, sha256_prefix, default_thumb_filename_only)
+                            if not os.path.exists(potential_thumb_path):
+                                potential_thumb_path = os.path.join(thumbnail_dir_path, default_thumb_filename_only)
+                            if os.path.exists(potential_thumb_path):
                                 try:
-                                    os.remove(thumbnail_to_delete)
-                                    logging.info(f"Deleted thumbnail due to hashing error (default name): {thumbnail_to_delete}")
+                                    os.remove(potential_thumb_path)
+                                    logging.info(f"Deleted thumbnail (hashing error, fallback path): {potential_thumb_path}")
                                 except OSError as e:
-                                    logging.error(f"Error deleting thumbnail (default name) {thumbnail_to_delete}: {e}")
-            except OSError as e:
+                                    logging.error(f"Error deleting thumbnail (fallback path) {potential_thumb_path}: {e}")
+            except OSError as e: # Error accessing file for mtime or other metadata
                 logging.error(f"Could not get metadata for file {abs_file_path_to_check} during rescan: {e}")
                 shas_to_remove.append(sha256_hex)
-                thumb_name_from_cache = data.get('thumbnail_file')
-                if thumb_name_from_cache:
-                    thumbnail_to_delete = os.path.join(thumbnail_dir_path, thumb_name_from_cache)
-                    if os.path.exists(thumbnail_to_delete):
+                thumb_relative_path_from_cache = data.get('thumbnail_file')
+                if thumb_relative_path_from_cache:
+                    thumbnail_to_delete_abs = os.path.join(thumbnail_dir_path, thumb_relative_path_from_cache)
+                    if os.path.exists(thumbnail_to_delete_abs):
                         try:
-                            os.remove(thumbnail_to_delete)
-                            logging.info(f"Deleted thumbnail due to metadata error: {thumbnail_to_delete}")
+                            os.remove(thumbnail_to_delete_abs)
+                            logging.info(f"Deleted thumbnail (metadata error for source file): {thumbnail_to_delete_abs}")
                         except OSError as e_thumb:
-                            logging.error(f"Error deleting thumbnail {thumbnail_to_delete}: {e_thumb}")
+                            logging.error(f"Error deleting thumbnail {thumbnail_to_delete_abs}: {e_thumb}")
                 else: # Fallback
-                    default_thumb_name = f"{sha256_hex}{THUMBNAIL_EXTENSION}"
-                    thumbnail_to_delete = os.path.join(thumbnail_dir_path, default_thumb_name)
-                    if os.path.exists(thumbnail_to_delete):
+                    sha256_prefix = sha256_hex[:2]
+                    default_thumb_filename_only = f"{sha256_hex}{THUMBNAIL_EXTENSION}"
+                    potential_thumb_path = os.path.join(thumbnail_dir_path, sha256_prefix, default_thumb_filename_only)
+                    if not os.path.exists(potential_thumb_path):
+                        potential_thumb_path = os.path.join(thumbnail_dir_path, default_thumb_filename_only)
+                    if os.path.exists(potential_thumb_path):
                         try:
-                            os.remove(thumbnail_to_delete)
-                            logging.info(f"Deleted thumbnail due to metadata error (default name): {thumbnail_to_delete}")
+                            os.remove(potential_thumb_path)
+                            logging.info(f"Deleted thumbnail (metadata error, fallback path): {potential_thumb_path}")
                         except OSError as e_thumb:
-                            logging.error(f"Error deleting thumbnail (default name) {thumbnail_to_delete}: {e_thumb}")
+                            logging.error(f"Error deleting thumbnail (fallback path) {potential_thumb_path}: {e_thumb}")
 
         for sha in shas_to_remove:
             if sha in current_media_data:
@@ -281,12 +318,13 @@ def scan_directory(storage_dir: str,
                 logging.debug(f"Processing media file: {abs_file_path} (relative: {rel_file_path})")
                 sha256_hex = get_file_sha256(abs_file_path)
                 if sha256_hex:
-                    thumbnail_file_name = None
+                    # thumbnail_file_name will store the relative path like "ab/hash.png"
+                    thumbnail_relative_path = None
                     mime_type, _ = mimetypes.guess_type(abs_file_path)
                     if mime_type and mime_type.startswith('image/'):
-                        thumb_path = generate_thumbnail(abs_file_path, thumbnail_dir_path, sha256_hex)
-                        if thumb_path:
-                            thumbnail_file_name = os.path.basename(thumb_path)
+                        # generate_thumbnail now returns the relative path (e.g., 'ab/hash.png')
+                        thumbnail_relative_path = generate_thumbnail(abs_file_path, thumbnail_dir_path, sha256_hex)
+                        # No need for os.path.basename here anymore as generate_thumbnail returns the desired format.
 
                     # Logic for adding or updating cache entry
                     existing_entry_for_sha = current_media_data.get(sha256_hex)
@@ -316,10 +354,10 @@ def scan_directory(storage_dir: str,
                                 'file_path': rel_file_path,
                                 'last_modified': last_modified,
                                 'original_creation_date': original_creation_date,
-                                'thumbnail_file': thumbnail_file_name
+                                'thumbnail_file': thumbnail_relative_path # Store the relative path
                             }
                             current_media_data[sha256_hex] = entry_data
-                            logging.debug(f"Cache ADDED/UPDATED for SHA: {sha256_hex}, file: {disk_filename}, path: {rel_file_path}")
+                            logging.debug(f"Cache ADDED/UPDATED for SHA: {sha256_hex}, file: {disk_filename}, path: {rel_file_path}, thumb: {thumbnail_relative_path}")
                             # Add to known_file_paths if it's a new path being processed in this walk
                             known_file_paths.add(rel_file_path)
 
@@ -336,20 +374,64 @@ def scan_directory(storage_dir: str,
 
     # Synchronize .thumbnails directory: remove any orphaned thumbnails
     if os.path.exists(thumbnail_dir_path):
-        try:
-            for thumb_filename in os.listdir(thumbnail_dir_path):
-                if thumb_filename.endswith(THUMBNAIL_EXTENSION):
-                    thumb_sha = thumb_filename[:-len(THUMBNAIL_EXTENSION)]
-                    if thumb_sha not in current_media_data:
-                        orphaned_thumb_path = os.path.join(thumbnail_dir_path, thumb_filename)
-                        try:
-                            os.remove(orphaned_thumb_path)
-                            logging.info(f"Removed orphaned thumbnail: {orphaned_thumb_path}")
-                        except OSError as e:
-                            logging.error(f"Error removing orphaned thumbnail {orphaned_thumb_path}: {e}")
-        except OSError as e:
-            logging.error(f"Could not list thumbnail directory for cleanup {thumbnail_dir_path}: {e}")
+        logging.info(f"Cleaning orphaned thumbnails in {thumbnail_dir_path}...")
+        cleaned_count = 0
+        # Walk through the thumbnail directory structure (e.g., .thumbnails/ab/hash.png)
+        for root, dirs, files in os.walk(thumbnail_dir_path, topdown=False): # topdown=False for rmdir
+            for file_name in files:
+                if file_name.endswith(THUMBNAIL_EXTENSION):
+                    # Construct the SHA from the path and filename
+                    # Example: root = /path/to/.thumbnails/ab, file_name = abcdef123.png
+                    # We need to check if 'abcdef123' is in current_media_data
+                    thumb_sha_from_filename = file_name[:-len(THUMBNAIL_EXTENSION)]
 
+                    # We also need to ensure the thumbnail_file entry in cache matches this structure.
+                    # The cache stores 'ab/abcdef123.png' if 'ab' is the prefix dir.
+                    # If root is thumbnail_dir_path itself, then it's an old flat thumbnail.
+                    subdir_prefix = ""
+                    if root != thumbnail_dir_path:
+                        subdir_prefix = os.path.basename(root) # Should be 'ab'
+
+                    # Reconstruct the relative path as it would be stored in cache
+                    # For new structure: 'ab/hash.png'. For old structure: 'hash.png'
+                    expected_cache_thumbnail_file = os.path.join(subdir_prefix, file_name) if subdir_prefix else file_name
+
+                    # Check if this SHA is in current_media_data
+                    # And if its 'thumbnail_file' entry matches the current file's relative path
+                    media_item = current_media_data.get(thumb_sha_from_filename)
+                    is_orphan = True
+                    if media_item:
+                        if media_item.get('thumbnail_file') == expected_cache_thumbnail_file:
+                            is_orphan = False
+                        else:
+                            # SHA exists, but points to a different thumbnail path (e.g. after migration or error)
+                            logging.warning(f"SHA {thumb_sha_from_filename} exists but its cached thumbnail path "
+                                            f"'{media_item.get('thumbnail_file')}' does not match current path "
+                                            f"'{expected_cache_thumbnail_file}'. Considering current file an orphan.")
+                    else: # SHA not in current_media_data at all
+                        # This also handles the case where the file is an old flat thumbnail
+                        # and its SHA is no longer valid.
+                        pass
+
+
+                    if is_orphan:
+                        orphaned_thumb_path_abs = os.path.join(root, file_name)
+                        try:
+                            os.remove(orphaned_thumb_path_abs)
+                            logging.info(f"Removed orphaned thumbnail: {orphaned_thumb_path_abs}")
+                            cleaned_count +=1
+                        except OSError as e:
+                            logging.error(f"Error removing orphaned thumbnail {orphaned_thumb_path_abs}: {e}")
+
+            # After removing files in a directory, if the directory is empty, remove it
+            # This applies only to subdirectories (e.g. .thumbnails/ab), not the main .thumbnails dir
+            if root != thumbnail_dir_path and not os.listdir(root):
+                try:
+                    os.rmdir(root)
+                    logging.info(f"Removed empty thumbnail subdirectory: {root}")
+                except OSError as e:
+                    logging.error(f"Error removing empty thumbnail subdirectory {root}: {e}")
+        logging.info(f"Orphaned thumbnail cleanup complete. Removed {cleaned_count} files.")
 
     if rescan:
         logging.info(f"Rescan complete. Found {len(current_media_data)} media files.")
