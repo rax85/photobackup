@@ -1,14 +1,11 @@
+import PhotoSwipeLightbox from './lib/photoswipe/photoswipe-lightbox.esm.js';
+import PhotoSwipe from './lib/photoswipe/photoswipe.esm.js';
+
 document.addEventListener('DOMContentLoaded', () => {
     const galleryGrid = document.getElementById('gallery-grid');
-    const overlayViewer = document.getElementById('overlay-viewer');
-    const overlayImage = document.getElementById('overlay-image');
-    const closeBtn = overlayViewer.querySelector('.close-btn');
-    const prevBtn = overlayViewer.querySelector('.prev-btn');
-    const nextBtn = overlayViewer.querySelector('.next-btn');
-    const captionDiv = overlayViewer.querySelector('.caption');
 
     let mediaItems = []; // To store all media data from /list
-    let currentImageIndex = -1;
+    let lightbox;
 
     // Function to fetch media list
     async function fetchMediaList() {
@@ -20,11 +17,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
             mediaItems = Object.entries(data).map(([sha256, itemData]) => ({
                 sha256,
-                ...itemData
+                src: `/image/${sha256}`, // URL for full image
+                thumbnail: `/thumbnail/${sha256}`, // URL for thumbnail
+                width: itemData.width, // Expected from backend update
+                height: itemData.height, // Expected from backend update
+                alt: itemData.filename || 'Media file',
+                ...itemData // Keep other data if needed (e.g., for captions if we add them later)
             }));
             // Sort by original creation date, newest first
             mediaItems.sort((a, b) => (b.original_creation_date || 0) - (a.original_creation_date || 0));
             displayMedia();
+            initPhotoSwipe();
         } catch (error) {
             console.error("Error fetching media list:", error);
             galleryGrid.innerHTML = '<p>Error loading media. Please try again later.</p>';
@@ -40,93 +43,58 @@ document.addEventListener('DOMContentLoaded', () => {
 
         galleryGrid.innerHTML = ''; // Clear previous items
 
-        mediaItems.forEach((item, index) => {
-            const galleryItem = document.createElement('div');
-            galleryItem.className = 'gallery-item';
-            galleryItem.dataset.index = index; // Store index for easy lookup
+        mediaItems.forEach((item) => {
+            const galleryLink = document.createElement('a');
+            galleryLink.href = item.src;
+            galleryLink.dataset.pswpWidth = item.width || 1200; // Fallback width if not provided
+            galleryLink.dataset.pswpHeight = item.height || 800; // Fallback height if not provided
+            galleryLink.dataset.pswpType = item.content_type && item.content_type.startsWith('video/') ? 'video' : 'image'; // Basic type detection
+            galleryLink.target = '_blank'; // Good practice for links
+            galleryLink.className = 'gallery-item'; // Apply styling directly to the link
 
             const img = document.createElement('img');
-            // Use a placeholder or loading indicator if desired
-            // For now, directly set the thumbnail URL
-            img.src = `/thumbnail/${item.sha256}`;
-            img.alt = item.filename || 'Media thumbnail';
-            // Consider adding lazy loading for images here if performance becomes an issue
+            img.src = item.thumbnail;
+            img.alt = item.alt;
             img.loading = 'lazy';
 
-            galleryItem.appendChild(img);
-            galleryGrid.appendChild(galleryItem);
-
-            galleryItem.addEventListener('click', () => {
-                openOverlay(index);
-            });
+            galleryLink.appendChild(img);
+            galleryGrid.appendChild(galleryLink);
         });
     }
 
-    // Function to open the overlay viewer
-    function openOverlay(index) {
-        if (index < 0 || index >= mediaItems.length) {
-            console.error("Invalid index for overlay:", index);
-            return;
+    function initPhotoSwipe() {
+        if (lightbox) {
+            lightbox.destroy();
         }
-        currentImageIndex = index;
-        const item = mediaItems[currentImageIndex];
+        lightbox = new PhotoSwipeLightbox({
+            gallery: '#gallery-grid',
+            children: 'a',
+            pswpModule: PhotoSwipe,
+            // Optional: show hide opacity option, since we removed the old overlay
+            showHideAnimationType: 'fade', /* default is 'zoom' */
+            // Optional: adjust preloader
+            preloaderDelay: 500, // Show preloader after 0.5s
+        });
 
-        overlayImage.src = `/image/${item.sha256}`;
-        overlayImage.alt = item.filename || 'Full-sized media';
-        captionDiv.textContent = item.filename || '';
+        // Optional: Add custom caption - PhotoSwipe 5 doesn't have built-in caption support in core
+        // lightbox.on('uiRegister', function() {
+        //   lightbox.pswp.ui.registerElement({
+        //     name: 'custom-caption',
+        //     order: 9,
+        //     isButton: false,
+        //     appendTo: 'root',
+        //     html: 'Caption text',
+        //     onInit: (el, pswp) => {
+        //       lightbox.pswp.on('change', () => {
+        //         const currSlideElement = lightbox.pswp.currSlide.data;
+        //         el.innerHTML = currSlideElement.alt || '';
+        //       });
+        //     }
+        //   });
+        // });
 
-        // overlayViewer.style.display = 'flex'; // Replaced by class toggle
-        overlayViewer.classList.add('visible');
-        document.body.style.overflow = 'hidden'; // Prevent background scrolling
-        updateNavButtons();
+        lightbox.init();
     }
-
-    // Function to close the overlay viewer
-    function closeOverlay() {
-        // overlayViewer.style.display = 'none'; // Replaced by class toggle
-        overlayViewer.classList.remove('visible');
-        document.body.style.overflow = ''; // Restore background scrolling
-        overlayImage.src = ''; // Clear image to free memory
-        currentImageIndex = -1;
-    }
-
-    // Function to show the previous image
-    function showPrevImage() {
-        if (currentImageIndex > 0) {
-            openOverlay(currentImageIndex - 1);
-        }
-    }
-
-    // Function to show the next image
-    function showNextImage() {
-        if (currentImageIndex < mediaItems.length - 1) {
-            openOverlay(currentImageIndex + 1);
-        }
-    }
-
-    // Function to update visibility of nav buttons
-    function updateNavButtons() {
-        prevBtn.style.display = currentImageIndex > 0 ? 'flex' : 'none';
-        nextBtn.style.display = currentImageIndex < mediaItems.length - 1 ? 'flex' : 'none';
-    }
-
-    // Event Listeners
-    closeBtn.addEventListener('click', closeOverlay);
-    prevBtn.addEventListener('click', showPrevImage);
-    nextBtn.addEventListener('click', showNextImage);
-
-    // Keyboard navigation for overlay
-    document.addEventListener('keydown', (e) => {
-        if (overlayViewer.classList.contains('visible')) {
-            if (e.key === 'Escape') {
-                closeOverlay();
-            } else if (e.key === 'ArrowLeft') {
-                showPrevImage();
-            } else if (e.key === 'ArrowRight') {
-                showNextImage();
-            }
-        }
-    });
 
     // Initial fetch
     fetchMediaList();
