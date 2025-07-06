@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 import os
 import shutil
 import tempfile
@@ -181,42 +182,60 @@ class TestMediaScanner(unittest.TestCase):
         result = media_scanner.scan_directory(os.path.join(self.test_dir, "does_not_exist"))
         self.assertEqual(result, {})
 
-    def _assert_thumbnail_properties(self, thumb_path, original_image_path, expected_sha):
-        self.assertTrue(os.path.exists(thumb_path), f"Thumbnail not found at {thumb_path}")
-        with Image.open(thumb_path) as thumb_img:
+    def _assert_thumbnail_properties(self, base_thumbnail_dir, relative_thumb_path, original_image_path, expected_sha):
+        # relative_thumb_path is like "ab/abcdef123.png"
+        # base_thumbnail_dir is like "/tmp/test_dir/.thumbnails"
+        full_thumb_path = os.path.join(base_thumbnail_dir, relative_thumb_path)
+        self.assertTrue(os.path.exists(full_thumb_path), f"Thumbnail not found at {full_thumb_path}")
+
+        # Check that the subdirectory matches the first two chars of SHA
+        expected_subdir_name = expected_sha[:2]
+        path_parts = os.path.normpath(relative_thumb_path).split(os.sep)
+        self.assertEqual(path_parts[0], expected_subdir_name,
+                         f"Thumbnail subdirectory '{path_parts[0]}' does not match SHA prefix '{expected_subdir_name}'.")
+        self.assertEqual(path_parts[1], expected_sha + media_scanner.THUMBNAIL_EXTENSION,
+                         f"Thumbnail filename '{path_parts[1]}' does not match expected SHA-based name.")
+
+
+        with Image.open(full_thumb_path) as thumb_img:
             self.assertEqual(thumb_img.size, media_scanner.THUMBNAIL_SIZE, "Thumbnail dimensions are incorrect.")
             self.assertEqual(thumb_img.format, 'PNG', "Thumbnail format is not PNG.")
 
             with Image.open(original_image_path) as orig_img:
-                orig_w, orig_h = orig_img.size
-                thumb_w, thumb_h = media_scanner.THUMBNAIL_SIZE
+                # Simulate the resize dimensions that would occur in generate_thumbnail
+                temp_orig_for_sim = orig_img.copy()
+                temp_orig_for_sim.thumbnail(media_scanner.THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+                pasted_w, pasted_h = temp_orig_for_sim.size
 
-                if orig_w == orig_h: # Square image
-                    # For square images, there should be no transparency if scaled correctly
-                    # unless the image itself had alpha. Assuming opaque test images for simplicity.
-                    if thumb_img.mode == 'RGBA': # It will be RGBA due to Image.new("RGBA", ...)
-                        # Check that it's not fully transparent. Sum of alpha should be > 0.
-                        # For a perfectly opaque square image, all alpha values would be 255.
-                        # Sum would be 255 * thumb_w * thumb_h
-                        alpha_channel = thumb_img.getchannel('A')
-                        is_transparent_everywhere = all(p == 0 for p in alpha_channel.getdata())
-                        is_opaque_everywhere = all(p == 255 for p in alpha_channel.getdata())
+                thumb_target_w, thumb_target_h = media_scanner.THUMBNAIL_SIZE
+                # Calculate paste position
+                paste_x_start = (thumb_target_w - pasted_w) // 2
+                paste_y_start = (thumb_target_h - pasted_h) // 2
 
-                        # If original was perfectly square and opaque, thumbnail should be opaque.
-                        # This depends on whether original test images are RGBA or RGB.
-                        # Our dummy square image is JPEG, so it's RGB.
-                        self.assertTrue(is_opaque_everywhere, "Square image thumbnail has unexpected transparency.")
-                else: # Non-square image, expect padding
-                    self.assertEqual(thumb_img.mode, 'RGBA', "Non-square image thumbnail is not RGBA (expected transparency).")
-                    # Check corners for transparency (alpha value is 0)
-                    self.assertEqual(thumb_img.getpixel((0,0))[3], 0, "Top-left pixel not transparent for non-square.")
-                    self.assertEqual(thumb_img.getpixel((thumb_w-1,0))[3], 0, "Top-right pixel not transparent for non-square.")
-                    self.assertEqual(thumb_img.getpixel((0,thumb_h-1))[3], 0, "Bottom-left pixel not transparent for non-square.")
-                    self.assertEqual(thumb_img.getpixel((thumb_w-1,thumb_h-1))[3], 0, "Bottom-right pixel not transparent for non-square.")
+                self.assertEqual(thumb_img.mode, 'RGBA', "Thumbnail is not RGBA (expected transparency for padding).")
 
-                    # Check center area is not transparent (alpha value is 255)
-                    center_x, center_y = thumb_w // 2, thumb_h // 2
-                    self.assertEqual(thumb_img.getpixel((center_x, center_y))[3], 255, "Center pixel is transparent for non-square.")
+                # Check corners of the thumbnail canvas for transparency if there's any padding
+                if pasted_w < thumb_target_w or pasted_h < thumb_target_h:
+                    self.assertEqual(thumb_img.getpixel((0,0))[3], 0,
+                                     f"Top-left pixel not transparent when padding exists. Pasted: {pasted_w}x{pasted_h}, Target: {thumb_target_w}x{thumb_target_h}")
+                    self.assertEqual(thumb_img.getpixel((thumb_target_w-1,0))[3], 0,
+                                     "Top-right pixel not transparent when padding exists.")
+                    self.assertEqual(thumb_img.getpixel((0,thumb_target_h-1))[3], 0,
+                                     "Bottom-left pixel not transparent when padding exists.")
+                    self.assertEqual(thumb_img.getpixel((thumb_target_w-1,thumb_target_h-1))[3], 0,
+                                     "Bottom-right pixel not transparent when padding exists.")
+
+                # Check a point within the pasted image area for opacity (assuming original is opaque)
+                # Take a pixel from the center of the pasted area.
+                center_of_pasted_x = paste_x_start + pasted_w // 2
+                center_of_pasted_y = paste_y_start + pasted_h // 2
+
+                if 0 <= center_of_pasted_x < thumb_target_w and 0 <= center_of_pasted_y < thumb_target_h:
+                    if pasted_w > 0 and pasted_h > 0: # Only check if there's an actual pasted image
+                        self.assertEqual(thumb_img.getpixel((center_of_pasted_x, center_of_pasted_y))[3], 255,
+                                         f"Center pixel of pasted image area ({center_of_pasted_x},{center_of_pasted_y}) is transparent. Pasted dims: {pasted_w}x{pasted_h}")
+                elif pasted_w > 0 and pasted_h > 0 :
+                    self.fail(f"Calculated center of pasted image ({center_of_pasted_x},{center_of_pasted_y}) is outside thumbnail dimensions ({thumb_target_w}x{thumb_target_h}). Pasted: {pasted_w}x{pasted_h}")
 
 
     def test_scan_directory_initial_scan_and_thumbnails(self):
@@ -230,29 +249,37 @@ class TestMediaScanner(unittest.TestCase):
         self.assertIn(self.hash_img1, result)
         self.assertIn('original_creation_date', result[self.hash_img1])
         self.assertAlmostEqual(result[self.hash_img1]['original_creation_date'], os.path.getctime(self.file_img1), places=7)
-        thumb_path_img1 = os.path.join(self.thumbnail_dir_path, self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
-        self._assert_thumbnail_properties(thumb_path_img1, self.file_img1, self.hash_img1)
+        relative_thumb_path_img1 = os.path.join(self.hash_img1[:2], self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertEqual(result[self.hash_img1]['thumbnail_file'], relative_thumb_path_img1)
+        self._assert_thumbnail_properties(self.thumbnail_dir_path, relative_thumb_path_img1, self.file_img1, self.hash_img1)
 
         # Check square.jpg (no EXIF, should use ctime)
         self.assertIn(self.hash_img3_square, result)
         self.assertIn('original_creation_date', result[self.hash_img3_square])
         self.assertAlmostEqual(result[self.hash_img3_square]['original_creation_date'], os.path.getctime(self.file_img3_square), places=7)
-        thumb_path_img3 = os.path.join(self.thumbnail_dir_path, self.hash_img3_square + media_scanner.THUMBNAIL_EXTENSION)
-        self._assert_thumbnail_properties(thumb_path_img3, self.file_img3_square, self.hash_img3_square)
+        relative_thumb_path_img3 = os.path.join(self.hash_img3_square[:2], self.hash_img3_square + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertEqual(result[self.hash_img3_square]['thumbnail_file'], relative_thumb_path_img3)
+        self._assert_thumbnail_properties(self.thumbnail_dir_path, relative_thumb_path_img3, self.file_img3_square, self.hash_img3_square)
 
         # Check video1.mp4 (no EXIF, should use ctime)
         self.assertIn(self.hash_vid1, result)
         self.assertIn('original_creation_date', result[self.hash_vid1])
         self.assertAlmostEqual(result[self.hash_vid1]['original_creation_date'], os.path.getctime(self.file_vid1), places=7)
-        expected_thumb_path_vid1 = os.path.join(self.thumbnail_dir_path, self.hash_vid1 + media_scanner.THUMBNAIL_EXTENSION)
-        self.assertFalse(os.path.exists(expected_thumb_path_vid1)) # No thumbnail for video
+        self.assertIsNone(result[self.hash_vid1]['thumbnail_file']) # No thumbnail for video
+        # Check that no thumbnail file was created (neither new nor old style)
+        old_style_thumb_path_vid1 = os.path.join(self.thumbnail_dir_path, self.hash_vid1 + media_scanner.THUMBNAIL_EXTENSION)
+        new_style_thumb_path_vid1 = os.path.join(self.thumbnail_dir_path, self.hash_vid1[:2], self.hash_vid1 + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertFalse(os.path.exists(old_style_thumb_path_vid1))
+        self.assertFalse(os.path.exists(new_style_thumb_path_vid1))
+
 
         # Check subdir/image2.png (no EXIF, should use ctime)
         self.assertIn(self.hash_img2, result)
         self.assertIn('original_creation_date', result[self.hash_img2])
         self.assertAlmostEqual(result[self.hash_img2]['original_creation_date'], os.path.getctime(self.file_img2_subdir), places=7)
-        thumb_path_img2 = os.path.join(self.thumbnail_dir_path, self.hash_img2 + media_scanner.THUMBNAIL_EXTENSION)
-        self._assert_thumbnail_properties(thumb_path_img2, self.file_img2_subdir, self.hash_img2)
+        relative_thumb_path_img2 = os.path.join(self.hash_img2[:2], self.hash_img2 + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertEqual(result[self.hash_img2]['thumbnail_file'], relative_thumb_path_img2)
+        self._assert_thumbnail_properties(self.thumbnail_dir_path, relative_thumb_path_img2, self.file_img2_subdir, self.hash_img2)
 
         # Check image_with_exif.jpg (should use EXIF date)
         self.assertIn(self.hash_img_exif, result)
@@ -270,8 +297,9 @@ class TestMediaScanner(unittest.TestCase):
 
         self.assertAlmostEqual(result[self.hash_img_exif]['original_creation_date'], self.exif_timestamp, places=7,
                                msg=f"EXIF original date mismatch. Expected {self.exif_timestamp}, got {result[self.hash_img_exif]['original_creation_date']}")
-        thumb_path_img_exif = os.path.join(self.thumbnail_dir_path, self.hash_img_exif + media_scanner.THUMBNAIL_EXTENSION)
-        self._assert_thumbnail_properties(thumb_path_img_exif, self.file_img_exif, self.hash_img_exif)
+        relative_thumb_path_img_exif = os.path.join(self.hash_img_exif[:2], self.hash_img_exif + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertEqual(result[self.hash_img_exif]['thumbnail_file'], relative_thumb_path_img_exif)
+        self._assert_thumbnail_properties(self.thumbnail_dir_path, relative_thumb_path_img_exif, self.file_img_exif, self.hash_img_exif)
 
 
         # Ensure .thumbnails directory content is not in scan results
@@ -280,12 +308,16 @@ class TestMediaScanner(unittest.TestCase):
 
     def test_rescan_no_changes(self):
         initial_scan = media_scanner.scan_directory(self.test_dir)
-        thumb_path_img1 = os.path.join(self.thumbnail_dir_path, self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
-        self.assertTrue(os.path.exists(thumb_path_img1))
+        # Construct the expected relative path for the thumbnail
+        relative_thumb_path_img1 = os.path.join(self.hash_img1[:2], self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
+        full_thumb_path_img1 = os.path.join(self.thumbnail_dir_path, relative_thumb_path_img1)
+        self.assertTrue(os.path.exists(full_thumb_path_img1))
 
         rescan_result = media_scanner.scan_directory(self.test_dir, existing_data=initial_scan, rescan=True)
         self.assertEqual(initial_scan, rescan_result) # Should be identical if no changes
-        self.assertTrue(os.path.exists(thumb_path_img1)) # Thumbnail still there
+        self.assertTrue(os.path.exists(full_thumb_path_img1)) # Thumbnail still there
+        self.assertEqual(rescan_result[self.hash_img1]['thumbnail_file'], relative_thumb_path_img1)
+
 
     def test_rescan_add_image_file(self):
         initial_scan = media_scanner.scan_directory(self.test_dir)
@@ -299,26 +331,39 @@ class TestMediaScanner(unittest.TestCase):
         rescan_result = media_scanner.scan_directory(self.test_dir, existing_data=initial_scan, rescan=True)
         self.assertEqual(len(rescan_result), len(initial_scan) + 1)
         self.assertIn(new_img_hash, rescan_result)
-        new_thumb_path = os.path.join(self.thumbnail_dir_path, new_img_hash + media_scanner.THUMBNAIL_EXTENSION)
-        self._assert_thumbnail_properties(new_thumb_path, new_img_path, new_img_hash)
+        relative_new_thumb_path = os.path.join(new_img_hash[:2], new_img_hash + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertEqual(rescan_result[new_img_hash]['thumbnail_file'], relative_new_thumb_path)
+        self._assert_thumbnail_properties(self.thumbnail_dir_path, relative_new_thumb_path, new_img_path, new_img_hash)
 
 
     def test_rescan_remove_image_file(self):
         initial_scan = media_scanner.scan_directory(self.test_dir)
-        thumb_path_img1 = os.path.join(self.thumbnail_dir_path, self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
-        self.assertTrue(os.path.exists(thumb_path_img1))
+        relative_thumb_path_img1 = os.path.join(self.hash_img1[:2], self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
+        full_thumb_path_img1 = os.path.join(self.thumbnail_dir_path, relative_thumb_path_img1)
+        self.assertTrue(os.path.exists(full_thumb_path_img1))
+        thumb_subdir = os.path.dirname(full_thumb_path_img1)
+        self.assertTrue(os.path.isdir(thumb_subdir))
+
 
         os.remove(self.file_img1)
         rescan_result = media_scanner.scan_directory(self.test_dir, existing_data=initial_scan, rescan=True)
 
         self.assertEqual(len(rescan_result), len(initial_scan) - 1)
         self.assertNotIn(self.hash_img1, rescan_result)
-        self.assertFalse(os.path.exists(thumb_path_img1))
+        self.assertFalse(os.path.exists(full_thumb_path_img1))
+        # Subdirectory should also be removed if it becomes empty (assuming only this thumb was in it for the test)
+        # This depends on the orphan cleanup logic. If other files share the same prefix, it won't be removed.
+        # For this test, hash_img1 is unique enough that its prefix dir should be unique too.
+        if not any(sha.startswith(self.hash_img1[:2]) for sha in rescan_result if sha != self.hash_img1):
+             self.assertFalse(os.path.exists(thumb_subdir), "Thumbnail subdirectory should be removed if empty.")
+
 
     def test_rescan_modify_image_content_sha_changes(self):
         initial_scan = media_scanner.scan_directory(self.test_dir)
-        old_thumb_path_img1 = os.path.join(self.thumbnail_dir_path, self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
-        self.assertTrue(os.path.exists(old_thumb_path_img1))
+        old_relative_thumb_path_img1 = os.path.join(self.hash_img1[:2], self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
+        old_full_thumb_path_img1 = os.path.join(self.thumbnail_dir_path, old_relative_thumb_path_img1)
+        self.assertTrue(os.path.exists(old_full_thumb_path_img1))
+        old_thumb_subdir = os.path.dirname(old_full_thumb_path_img1)
 
         # Overwrite self.file_img1 with new content/image
         create_dummy_file(
@@ -331,20 +376,26 @@ class TestMediaScanner(unittest.TestCase):
 
         rescan_result = media_scanner.scan_directory(self.test_dir, existing_data=initial_scan, rescan=True)
 
-        self.assertEqual(len(rescan_result), len(initial_scan))
+        self.assertEqual(len(rescan_result), len(initial_scan)) # Length is same, one removed, one added
         self.assertNotIn(self.hash_img1, rescan_result) # Old SHA removed
-        self.assertFalse(os.path.exists(old_thumb_path_img1)) # Old thumbnail deleted
+        self.assertFalse(os.path.exists(old_full_thumb_path_img1)) # Old thumbnail deleted
+        # Check if old subdirectory was removed, if it became empty
+        if not any(sha.startswith(self.hash_img1[:2]) for sha in rescan_result):
+            self.assertFalse(os.path.exists(old_thumb_subdir), "Old thumbnail subdirectory should be removed if empty.")
+
 
         self.assertIn(new_hash_img1, rescan_result) # New SHA added
-        new_thumb_path_img1 = os.path.join(self.thumbnail_dir_path, new_hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
-        self._assert_thumbnail_properties(new_thumb_path_img1, self.file_img1, new_hash_img1) # Check new thumbnail
+        new_relative_thumb_path_img1 = os.path.join(new_hash_img1[:2], new_hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertEqual(rescan_result[new_hash_img1]['thumbnail_file'], new_relative_thumb_path_img1)
+        self._assert_thumbnail_properties(self.thumbnail_dir_path, new_relative_thumb_path_img1, self.file_img1, new_hash_img1) # Check new thumbnail
 
 
     def test_rescan_modify_image_mtime_only_no_thumbnail_regen(self):
         initial_scan = media_scanner.scan_directory(self.test_dir)
-        thumb_path = os.path.join(self.thumbnail_dir_path, self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
-        self.assertTrue(os.path.exists(thumb_path))
-        thumb_mtime_before = os.path.getmtime(thumb_path)
+        relative_thumb_path = os.path.join(self.hash_img1[:2], self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
+        full_thumb_path = os.path.join(self.thumbnail_dir_path, relative_thumb_path)
+        self.assertTrue(os.path.exists(full_thumb_path))
+        thumb_mtime_before = os.path.getmtime(full_thumb_path)
 
         time.sleep(0.01) # Ensure mtime can change noticeably if file is touched
         new_mtime = time.time() + 100 # Make it distinct
@@ -355,42 +406,94 @@ class TestMediaScanner(unittest.TestCase):
         self.assertEqual(len(rescan_result), len(initial_scan))
         self.assertIn(self.hash_img1, rescan_result)
         self.assertAlmostEqual(rescan_result[self.hash_img1]['last_modified'], new_mtime, places=7)
+        self.assertEqual(rescan_result[self.hash_img1]['thumbnail_file'], relative_thumb_path)
 
-        self.assertTrue(os.path.exists(thumb_path))
-        thumb_mtime_after = os.path.getmtime(thumb_path)
+
+        self.assertTrue(os.path.exists(full_thumb_path))
+        thumb_mtime_after = os.path.getmtime(full_thumb_path)
         self.assertEqual(thumb_mtime_before, thumb_mtime_after,
                          "Thumbnail mtime changed, indicating regeneration for mtime-only file change, which is not desired.")
 
 
-    def test_thumbnail_cleanup_orphaned_and_non_image_in_thumbnails_dir(self):
-        media_scanner.scan_directory(self.test_dir) # Initial scan to create .thumbnails and valid thumbs
-        thumb_img1_path = os.path.join(self.thumbnail_dir_path, self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
-        self.assertTrue(os.path.exists(thumb_img1_path))
+    def test_thumbnail_cleanup_logic(self):
+        # 1. Initial scan to create valid thumbnails and subdirs
+        initial_scan_result = media_scanner.scan_directory(self.test_dir)
+        valid_thumb_rel_path = initial_scan_result[self.hash_img1]['thumbnail_file']
+        valid_thumb_full_path = os.path.join(self.thumbnail_dir_path, valid_thumb_rel_path)
+        valid_thumb_subdir = os.path.dirname(valid_thumb_full_path)
+        self.assertTrue(os.path.exists(valid_thumb_full_path))
+        self.assertTrue(os.path.isdir(valid_thumb_subdir))
 
-        # Create orphaned thumbnail
-        orphaned_thumb_path = os.path.join(self.thumbnail_dir_path, "orphaned_sha123" + media_scanner.THUMBNAIL_EXTENSION)
-        Image.new('RGB', (10,10), color='pink').save(orphaned_thumb_path, 'PNG') # Dummy PNG
-        self.assertTrue(os.path.exists(orphaned_thumb_path))
+        # 2. Create an orphaned thumbnail in a new-style subdirectory
+        orphan_sha_new_style = "aa" + "b" * 62 # e.g., aa/aabbb...bbb.png
+        orphan_subdir_new_style = os.path.join(self.thumbnail_dir_path, orphan_sha_new_style[:2])
+        os.makedirs(orphan_subdir_new_style, exist_ok=True)
+        orphan_thumb_path_new_style = os.path.join(orphan_subdir_new_style, orphan_sha_new_style + media_scanner.THUMBNAIL_EXTENSION)
+        Image.new('RGB', (10,10), color='pink').save(orphan_thumb_path_new_style, 'PNG')
+        self.assertTrue(os.path.exists(orphan_thumb_path_new_style))
 
-        # Create non-thumbnail file in .thumbnails
-        non_thumbnail_file_path = os.path.join(self.thumbnail_dir_path, "data.json")
-        with open(non_thumbnail_file_path, "w") as f: f.write("{}")
-        self.assertTrue(os.path.exists(non_thumbnail_file_path))
+        # 3. Create an orphaned thumbnail in the old flat style (root of .thumbnails)
+        orphan_sha_old_style = "cc" + "d" * 62
+        orphan_thumb_path_old_style = os.path.join(self.thumbnail_dir_path, orphan_sha_old_style + media_scanner.THUMBNAIL_EXTENSION)
+        Image.new('RGB', (10,10), color='green').save(orphan_thumb_path_old_style, 'PNG')
+        self.assertTrue(os.path.exists(orphan_thumb_path_old_style))
 
-        # Rescan (use existing_data=None for a full fresh scan to trigger cleanup based on current state)
-        current_media = media_scanner.scan_directory(self.test_dir, rescan=False) # This scan itself will perform cleanup
+        # 4. Create a non-thumbnail file in a thumbnail subdirectory
+        non_thumbnail_file_in_subdir_path = os.path.join(valid_thumb_subdir, "data.json")
+        with open(non_thumbnail_file_in_subdir_path, "w") as f: f.write("{}")
+        self.assertTrue(os.path.exists(non_thumbnail_file_in_subdir_path))
 
-        self.assertTrue(os.path.exists(thumb_img1_path)) # Valid thumbnail remains
-        self.assertFalse(os.path.exists(orphaned_thumb_path)) # Orphaned .png thumbnail removed
-        self.assertTrue(os.path.exists(non_thumbnail_file_path)) # Non-thumbnail file remains
+        # 5. Create a non-thumbnail file in the root of .thumbnails
+        non_thumbnail_file_in_root_path = os.path.join(self.thumbnail_dir_path, "notes.txt")
+        with open(non_thumbnail_file_in_root_path, "w") as f: f.write("notes")
+        self.assertTrue(os.path.exists(non_thumbnail_file_in_root_path))
+
+        # 6. Create an empty subdirectory (should be removed)
+        empty_thumb_subdir = os.path.join(self.thumbnail_dir_path, "ee")
+        os.makedirs(empty_thumb_subdir, exist_ok=True)
+        self.assertTrue(os.path.isdir(empty_thumb_subdir))
+
+
+        # Perform a rescan. Cleanup happens at the end of scan_directory.
+        # We pass the initial_scan_result as existing_data, so it knows about valid files.
+        media_scanner.scan_directory(self.test_dir, existing_data=initial_scan_result, rescan=True)
+
+        # Assertions:
+        self.assertTrue(os.path.exists(valid_thumb_full_path), "Valid thumbnail should remain.")
+        self.assertTrue(os.path.isdir(valid_thumb_subdir), "Valid thumbnail's subdirectory should remain.")
+
+        self.assertFalse(os.path.exists(orphan_thumb_path_new_style), "New-style orphaned thumbnail should be removed.")
+        self.assertFalse(os.path.exists(orphan_subdir_new_style), "New-style orphaned thumbnail's subdirectory should be removed as it's now empty.")
+
+        self.assertFalse(os.path.exists(orphan_thumb_path_old_style), "Old-style orphaned thumbnail should be removed.")
+
+        self.assertTrue(os.path.exists(non_thumbnail_file_in_subdir_path), "Non-thumbnail file in a valid subdir should remain.")
+        self.assertTrue(os.path.exists(non_thumbnail_file_in_root_path), "Non-thumbnail file in .thumbnails root should remain.")
+        self.assertFalse(os.path.exists(empty_thumb_subdir), "Empty thumbnail subdirectory should be removed.")
+        self.assertTrue(os.path.isdir(self.thumbnail_dir_path), ".thumbnails directory itself should not be removed.")
+
 
     def test_thumbnail_generation_for_image_in_subdir(self):
         # This is implicitly tested by test_scan_directory_initial_scan_and_thumbnails
         # but an explicit check can be here too.
-        result = media_scanner.scan_directory(self.test_dir)
+        result = media_scanner.scan_directory(self.test_dir) # Runs full scan
         self.assertIn(self.hash_img2, result) # img2 is in self.subdir
-        thumb_path_img2 = os.path.join(self.thumbnail_dir_path, self.hash_img2 + media_scanner.THUMBNAIL_EXTENSION)
-        self._assert_thumbnail_properties(thumb_path_img2, self.file_img2_subdir, self.hash_img2)
+        relative_thumb_path_img2 = os.path.join(self.hash_img2[:2], self.hash_img2 + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertEqual(result[self.hash_img2]['thumbnail_file'], relative_thumb_path_img2)
+        self._assert_thumbnail_properties(self.thumbnail_dir_path, relative_thumb_path_img2, self.file_img2_subdir, self.hash_img2)
+
+
+    def test_generate_thumbnail_return_value_and_creation(self):
+        """Explicitly test generate_thumbnail's return value and file creation."""
+        thumb_rel_path = media_scanner.generate_thumbnail(
+            self.file_img1, self.thumbnail_dir_path, self.hash_img1
+        )
+        expected_rel_path = os.path.join(self.hash_img1[:2], self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertEqual(thumb_rel_path, expected_rel_path)
+
+        full_thumb_path = os.path.join(self.thumbnail_dir_path, expected_rel_path)
+        self.assertTrue(os.path.exists(full_thumb_path))
+        # Can add more _assert_thumbnail_properties if needed, but it's covered elsewhere
 
     def test_scan_directory_permissions_error_on_metadata(self):
         # This test is tricky to set up reliably across platforms for getmtime.
@@ -402,27 +505,81 @@ class TestMediaScanner(unittest.TestCase):
         hash_tricky = calculate_sha256_file(tricky_file_path)
 
 
-        original_os_path_getmtime = media_scanner.os.path.getmtime # Save original from module
+        original_os_path_getmtime = os.path.getmtime # Save original from global os
         def mock_getmtime(path):
             if "tricky.jpg" in path:
                 raise OSError("Simulated metadata read error")
             return original_os_path_getmtime(path) # Call original for other files
 
-        media_scanner.os.path.getmtime = mock_getmtime
-
-        # Perform a scan. Initial data is empty or non-existent for this particular tricky file.
-        result = media_scanner.scan_directory(self.test_dir, existing_data={}, rescan=True)
-
-        media_scanner.os.path.getmtime = original_os_path_getmtime # Restore
+        # Mock os.path.getmtime within the media_scanner module's scope for the test
+        with unittest.mock.patch('media_server.media_scanner.os.path.getmtime', mock_getmtime):
+            # Perform a scan. Initial data is empty or non-existent for this particular tricky file.
+            result = media_scanner.scan_directory(self.test_dir, existing_data={}, rescan=True)
 
         self.assertNotIn(hash_tricky, result, "File with simulated getmtime error should be skipped.")
-        thumb_tricky_path = os.path.join(self.thumbnail_dir_path, hash_tricky + media_scanner.THUMBNAIL_EXTENSION)
-        self.assertFalse(os.path.exists(thumb_tricky_path),
-                         "Thumbnail for file with getmtime error should not exist or be cleaned up if error happens during rescan logic for it.")
+        # Check both old and new style thumbnail paths for non-existence
+        old_style_thumb_tricky_path = os.path.join(self.thumbnail_dir_path, hash_tricky + media_scanner.THUMBNAIL_EXTENSION)
+        new_style_thumb_tricky_path = os.path.join(self.thumbnail_dir_path, hash_tricky[:2], hash_tricky + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertFalse(os.path.exists(old_style_thumb_tricky_path),
+                         "Old style thumbnail for file with getmtime error should not exist.")
+        self.assertFalse(os.path.exists(new_style_thumb_tricky_path),
+                         "New style thumbnail for file with getmtime error should not exist.")
+        thumb_tricky_subdir = os.path.join(self.thumbnail_dir_path, hash_tricky[:2])
+        if os.path.exists(thumb_tricky_subdir): # Subdir might exist if other files had same prefix
+            self.assertFalse(any(f.startswith(hash_tricky) for f in os.listdir(thumb_tricky_subdir)))
+
 
         # Other files should still be there and have thumbnails
         self.assertIn(self.hash_img1, result)
-        self.assertTrue(os.path.exists(os.path.join(self.thumbnail_dir_path, self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)))
+        valid_thumb_rel_path = os.path.join(self.hash_img1[:2], self.hash_img1 + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertTrue(os.path.exists(os.path.join(self.thumbnail_dir_path, valid_thumb_rel_path)))
+
+
+    def test_scan_self_healing_from_flat_thumbnail(self):
+        """Test if scan_directory correctly handles a file whose thumbnail is currently flat."""
+        # 1. Create a source image
+        img_path = create_dummy_file(
+            self.test_dir, "self_heal_img.jpg",
+            image_details={'size': (50, 50), 'color': 'cyan', 'format': 'JPEG'}
+        )
+        img_hash = calculate_sha256_file(img_path)
+
+        # 2. Ensure .thumbnails directory exists
+        os.makedirs(self.thumbnail_dir_path, exist_ok=True)
+
+        # 3. Manually create its thumbnail in the old flat style
+        old_flat_thumb_path = os.path.join(self.thumbnail_dir_path, img_hash + media_scanner.THUMBNAIL_EXTENSION)
+        Image.new('RGB', media_scanner.THUMBNAIL_SIZE, 'magenta').save(old_flat_thumb_path, 'PNG')
+        self.assertTrue(os.path.exists(old_flat_thumb_path))
+
+        # 4. Ensure the new-style path does NOT exist yet
+        new_style_subdir = os.path.join(self.thumbnail_dir_path, img_hash[:2])
+        new_style_thumb_path = os.path.join(new_style_subdir, img_hash + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertFalse(os.path.exists(new_style_thumb_path))
+        if os.path.exists(new_style_subdir): # cleanup if it exists from a prior test state for this prefix
+            shutil.rmtree(new_style_subdir)
+
+
+        # 5. Scan the directory.
+        # Pass existing_data that either doesn't know about this SHA, or has no 'thumbnail_file' for it,
+        # or has an incorrect 'thumbnail_file' (like the flat one).
+        # Using rescan=False for a fresh build based on filesystem state.
+        scan_result = media_scanner.scan_directory(self.test_dir, rescan=False)
+
+        # 6. Assertions
+        self.assertIn(img_hash, scan_result)
+        # Cache should now point to the new, correct relative path
+        expected_new_relative_path = os.path.join(img_hash[:2], img_hash + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertEqual(scan_result[img_hash]['thumbnail_file'], expected_new_relative_path)
+
+        # New thumbnail should exist in the subdirectory
+        self.assertTrue(os.path.exists(new_style_thumb_path), "New style thumbnail was not created.")
+        self._assert_thumbnail_properties(self.thumbnail_dir_path,expected_new_relative_path,img_path,img_hash )
+
+
+        # Old flat thumbnail should have been removed by orphan cleanup
+        self.assertFalse(os.path.exists(old_flat_thumb_path),
+                         "Old flat thumbnail was not removed after new one was generated.")
 
 
 if __name__ == '__main__':

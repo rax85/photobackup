@@ -191,9 +191,10 @@ def put_image(filename):
                 sha256_hash
             )
             if thumbnail_path_generated:
-                 thumbnail_file_name_only = os.path.basename(thumbnail_path_generated)
+                # thumbnail_path_generated is now the relative path like "ab/hash.png"
+                thumbnail_file_name_only = thumbnail_path_generated
             else:
-                 logging.warning(f"Thumbnail generation failed for {prospective_path_on_disk}")
+                logging.warning(f"Thumbnail generation failed for {prospective_path_on_disk}")
 
         relative_file_path_for_cache = os.path.join(upload_subdir_rel, final_filename_on_disk)
 
@@ -332,9 +333,7 @@ def get_thumbnail(sha256_hex):
         logging.warning(f"Invalid SHA256 format requested: {sha256_hex}")
         abort(400, description="Invalid SHA256 format.")
 
-    thumbnail_filename = f"{sha256_hex}{media_scanner.THUMBNAIL_EXTENSION}"
     thumbnail_dir_abs_path = app.config.get('THUMBNAIL_DIR')
-
     if not thumbnail_dir_abs_path:
         logging.error("Thumbnail directory not configured in the application.")
         abort(500, description="Server configuration error.")
@@ -349,14 +348,52 @@ def get_thumbnail(sha256_hex):
     # Import Werkzeug's NotFound exception
     from werkzeug.exceptions import NotFound
 
+    # Attempt to get the thumbnail path from cache first
+    thumbnail_relative_path = None
+    with MEDIA_DATA_LOCK:
+        cached_data = MEDIA_DATA_CACHE.get(sha256_hex)
+        if cached_data:
+            thumbnail_relative_path = cached_data.get('thumbnail_file') # Should be like 'ab/hash.png'
+
+    if thumbnail_relative_path:
+        # Ensure the cached path is somewhat sane (e.g., contains a separator)
+        if os.sep not in thumbnail_relative_path and '/' not in thumbnail_relative_path:
+             logging.warning(f"Cached thumbnail path for {sha256_hex} ('{thumbnail_relative_path}') "
+                             f"does not look like a subdirectory path. Attempting legacy fallback.")
+             # Fallback to old naming convention if path from cache is not in new format
+             # This could happen if cache is from an older version or item wasn't processed correctly
+             sha256_prefix = sha256_hex[:2]
+             thumbnail_filename_only = f"{sha256_hex}{media_scanner.THUMBNAIL_EXTENSION}"
+             thumbnail_relative_path = os.path.join(sha256_prefix, thumbnail_filename_only)
+    else:
+        # If not in cache or cache doesn't have thumbnail_file, construct the path
+        logging.debug(f"Thumbnail for SHA {sha256_hex} not found in cache or cache entry missing 'thumbnail_file'. Constructing path.")
+        sha256_prefix = sha256_hex[:2]
+        thumbnail_filename_only = f"{sha256_hex}{media_scanner.THUMBNAIL_EXTENSION}"
+        thumbnail_relative_path = os.path.join(sha256_prefix, thumbnail_filename_only)
+        # Also try to serve from the flat directory for backward compatibility if the above fails.
+        # This will be handled by trying both paths below.
+
+    # Path to the actual thumbnail file, e.g., /base_thumb_dir/ab/hash.png
+    # send_from_directory needs the directory and the filename *within* that directory.
+    # thumbnail_relative_path is 'ab/hash.png'
+    # So, thumbnail_dir_abs_path is '.thumbnails', and we pass 'ab/hash.png' as the 'path' argument.
+
     try:
-        logging.info(f"Attempting to serve thumbnail: {thumbnail_filename} from {thumbnail_dir_abs_path}")
-        return send_from_directory(thumbnail_dir_abs_path, thumbnail_filename, mimetype='image/png')
-    except NotFound: # Specifically catch Werkzeug's NotFound
-        logging.info(f"Thumbnail not found via send_from_directory: {thumbnail_filename} in {thumbnail_dir_abs_path}")
-        abort(404, description="Thumbnail not found.")
+        logging.info(f"Attempting to serve thumbnail: {thumbnail_relative_path} from {thumbnail_dir_abs_path}")
+        return send_from_directory(thumbnail_dir_abs_path, thumbnail_relative_path, mimetype='image/png')
+    except NotFound:
+        logging.info(f"Thumbnail not found at new path: {os.path.join(thumbnail_dir_abs_path, thumbnail_relative_path)}. "
+                     f"Attempting legacy flat path for SHA: {sha256_hex}")
+        # Fallback for older, flatly stored thumbnails
+        legacy_thumbnail_filename = f"{sha256_hex}{media_scanner.THUMBNAIL_EXTENSION}"
+        try:
+            return send_from_directory(thumbnail_dir_abs_path, legacy_thumbnail_filename, mimetype='image/png')
+        except NotFound:
+            logging.info(f"Thumbnail not found at legacy path either: {os.path.join(thumbnail_dir_abs_path, legacy_thumbnail_filename)}")
+            abort(404, description="Thumbnail not found.")
     except Exception as e: # Catch any other unexpected errors
-        logging.error(f"Unexpected error serving thumbnail {thumbnail_filename}: {e}", exc_info=True)
+        logging.error(f"Unexpected error serving thumbnail {thumbnail_relative_path} for SHA {sha256_hex}: {e}", exc_info=True)
         abort(500, description="Internal server error while serving thumbnail.")
 
 

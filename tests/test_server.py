@@ -142,8 +142,21 @@ class TestServerFlaskIntegration(unittest.TestCase):
         self.assertEqual(response.content_type, 'application/json')
 
         returned_data = response.json
-        self.assertEqual(len(returned_data), 2) # Expecting two media files
+        # Ensure the thumbnail_file paths in the returned data match the new format.
+        # self.expected_media_data_after_setup was populated by scan_directory which should already use the new format.
+        self.assertEqual(len(returned_data), 2) # Expecting two media files (img1, vid1)
+        for sha, item_data in returned_data.items():
+            self.assertIn(sha, self.expected_media_data_after_setup)
+            self.assertEqual(item_data['filename'], self.expected_media_data_after_setup[sha]['filename'])
+            if item_data.get('thumbnail_file'): # Only images should have this
+                expected_thumb_file = self.expected_media_data_after_setup[sha]['thumbnail_file']
+                self.assertIsNotNone(expected_thumb_file)
+                self.assertTrue(len(expected_thumb_file.split(os.sep)) == 2 or len(expected_thumb_file.split('/')) == 2,
+                                f"Expected thumbnail_file '{expected_thumb_file}' to be in 'prefix/name' format.")
+                self.assertEqual(item_data['thumbnail_file'], expected_thumb_file)
+        # Full comparison if individual checks pass
         self.assertEqual(returned_data, self.expected_media_data_after_setup)
+
 
     def test_invalid_path_returns_404(self):
         """Test GET request to an invalid path."""
@@ -154,23 +167,70 @@ class TestServerFlaskIntegration(unittest.TestCase):
         # For API consistency, one might add a @app.errorhandler(404) to return JSON.
 
     def test_get_thumbnail_success(self):
-        """Test successfully retrieving an existing thumbnail."""
+        """Test successfully retrieving an existing thumbnail from new structure."""
         self.assertIsNotNone(self.img1_sha256, "Test setup error: img1_sha256 not set.")
-        # Ensure the thumbnail file actually exists where it should be
-        thumb_path = os.path.join(flask_app.config['THUMBNAIL_DIR'], f"{self.img1_sha256}{media_scanner.THUMBNAIL_EXTENSION}")
-        self.assertTrue(os.path.exists(thumb_path), f"Thumbnail file {thumb_path} does not exist. Scan/generation issue?")
+        sha_prefix = self.img1_sha256[:2]
+        expected_thumb_filename = f"{self.img1_sha256}{media_scanner.THUMBNAIL_EXTENSION}"
+        # Path including subdirectory
+        thumb_path_new_structure = os.path.join(flask_app.config['THUMBNAIL_DIR'], sha_prefix, expected_thumb_filename)
+        self.assertTrue(os.path.exists(thumb_path_new_structure),
+                        f"Thumbnail file {thumb_path_new_structure} does not exist. Scan/generation issue?")
 
         response = self.client.get(f'/thumbnail/{self.img1_sha256}')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content_type, 'image/png')
         self.assertTrue(len(response.data) > 0, "Thumbnail data should not be empty.")
 
+    def test_get_thumbnail_fallback_to_old_structure(self):
+        """Test serving a thumbnail that only exists in the old flat structure."""
+        # Create a dummy image and its SHA
+        dummy_content = b"old_dummy_image_content_for_fallback_test"
+        dummy_sha = hashlib.sha256(dummy_content).hexdigest()
+        dummy_img_filename = f"{dummy_sha}.jpg" # Does not matter if source exists for this test
+        dummy_img_path = create_dummy_file(self.test_dir, dummy_img_filename, dummy_content)
+
+
+        # Manually create a thumbnail in the old flat structure for this dummy SHA
+        old_style_thumb_filename = f"{dummy_sha}{media_scanner.THUMBNAIL_EXTENSION}"
+        old_style_thumb_path = os.path.join(flask_app.config['THUMBNAIL_DIR'], old_style_thumb_filename)
+        # Ensure its new-style path does NOT exist
+        new_style_subdir = os.path.join(flask_app.config['THUMBNAIL_DIR'], dummy_sha[:2])
+        new_style_thumb_path = os.path.join(new_style_subdir, old_style_thumb_filename)
+        if os.path.exists(new_style_subdir): # Clean up potential new style if it exists from other processes
+            if os.path.exists(new_style_thumb_path): os.remove(new_style_thumb_path)
+            if not os.listdir(new_style_subdir): os.rmdir(new_style_subdir)
+
+        Image.new('RGB', (30,30), 'purple').save(old_style_thumb_path, 'PNG')
+        self.assertTrue(os.path.exists(old_style_thumb_path))
+        self.assertFalse(os.path.exists(new_style_thumb_path))
+
+        # Add to cache as if it were an old entry (no thumbnail_file or incorrect one)
+        # Or better, ensure it's not in cache, so server constructs path and tries new then old.
+        with MEDIA_DATA_LOCK:
+            if dummy_sha in MEDIA_DATA_CACHE: # Remove if test setup accidentally put it there
+                del MEDIA_DATA_CACHE[dummy_sha]
+            # Alternatively, to test the cached path being old:
+            # MEDIA_DATA_CACHE[dummy_sha] = {'filename': 'dummy.jpg', 'file_path': 'dummy.jpg', 'thumbnail_file': old_style_thumb_filename}
+
+
+        response = self.client.get(f'/thumbnail/{dummy_sha}')
+        self.assertEqual(response.status_code, 200, f"Failed to get old-style thumbnail. Status: {response.status_code}, Data length: {len(response.data)}")
+        self.assertEqual(response.content_type, 'image/png')
+        self.assertTrue(len(response.data) > 0)
+
+        # Clean up the manually created thumbnail
+        os.remove(old_style_thumb_path)
+        os.remove(dummy_img_path)
+
+
     def test_get_thumbnail_not_found_for_video(self):
         """Test 404 for a media type that doesn't generate thumbnails (e.g., video)."""
         self.assertIsNotNone(self.vid1_sha256, "Test setup error: vid1_sha256 not set.")
-        # Ensure the thumbnail file does NOT exist for the video
-        thumb_path = os.path.join(flask_app.config['THUMBNAIL_DIR'], f"{self.vid1_sha256}{media_scanner.THUMBNAIL_EXTENSION}")
-        self.assertFalse(os.path.exists(thumb_path), f"Thumbnail file {thumb_path} should not exist for a video.")
+        # Ensure the thumbnail file does NOT exist for the video (neither new nor old style)
+        old_thumb_path = os.path.join(flask_app.config['THUMBNAIL_DIR'], f"{self.vid1_sha256}{media_scanner.THUMBNAIL_EXTENSION}")
+        new_thumb_path = os.path.join(flask_app.config['THUMBNAIL_DIR'], self.vid1_sha256[:2], f"{self.vid1_sha256}{media_scanner.THUMBNAIL_EXTENSION}")
+        self.assertFalse(os.path.exists(old_thumb_path), f"Old style thumbnail file {old_thumb_path} should not exist for a video.")
+        self.assertFalse(os.path.exists(new_thumb_path), f"New style thumbnail file {new_thumb_path} should not exist for a video.")
 
         response = self.client.get(f'/thumbnail/{self.vid1_sha256}')
         self.assertEqual(response.status_code, 404)
@@ -451,10 +511,14 @@ class TestImageEndpoints(unittest.TestCase):
             self.assertEqual(cache_entry['original_filename'], image_name)
             self.assertEqual(cache_entry['file_path'], os.path.join("uploads", today_str, image_name))
             self.assertIsNotNone(cache_entry['thumbnail_file'])
+            # Verify thumbnail_file format
+            expected_thumb_rel_path = os.path.join(img_sha256[:2], f"{img_sha256}{media_scanner.THUMBNAIL_EXTENSION}")
+            self.assertEqual(cache_entry['thumbnail_file'], expected_thumb_rel_path)
 
-        # Verify thumbnail generated
-        expected_thumbnail_path = os.path.join(flask_app.config['THUMBNAIL_DIR'], f"{img_sha256}.png")
-        self.assertTrue(os.path.exists(expected_thumbnail_path))
+
+        # Verify thumbnail generated in new structure
+        expected_thumbnail_full_path = os.path.join(flask_app.config['THUMBNAIL_DIR'], img_sha256[:2], f"{img_sha256}{media_scanner.THUMBNAIL_EXTENSION}")
+        self.assertTrue(os.path.exists(expected_thumbnail_full_path))
 
     def test_put_image_filename_collision(self):
         """Test filename collision: upload two different images with the same initial filename."""
@@ -630,3 +694,66 @@ class TestImageEndpoints(unittest.TestCase):
 
         get_response = self.client.get(f'/image/{img_sha256}')
         self.assertEqual(get_response.status_code, 404) # send_from_directory should cause NotFound -> 404
+
+    def test_get_thumbnail_corrects_bad_cached_path(self):
+        """Test GET thumbnail when cache has flat path but file is in new structure."""
+        # 1. Create a source image and generate its thumbnail correctly (new structure)
+        image_name = "bad_cache_path.png"
+        # Use a unique text_content to ensure a unique SHA for this test
+        img_data, _, img_sha = self._create_dummy_image_bytes(text_content="unique_for_bad_cache_test_" + image_name, format="PNG")
+
+
+        # Simulate an upload or scan that correctly places the thumbnail
+        # For simplicity, we'll call generate_thumbnail directly and place it.
+        # Ensure the main thumbnail directory and the specific SHA prefix subdir exist.
+        thumb_base_dir = flask_app.config['THUMBNAIL_DIR']
+        os.makedirs(thumb_base_dir, exist_ok=True) # Ensure .thumbnails exists
+        sha_prefix_dir = os.path.join(thumb_base_dir, img_sha[:2])
+        os.makedirs(sha_prefix_dir, exist_ok=True) # Ensure .thumbnails/pr exists
+
+        # Create a dummy source file for generate_thumbnail to "process"
+        # This isn't strictly necessary for the server test if we manually place the thumbnail,
+        # but good for completeness if media_scanner.generate_thumbnail were called.
+        # For this server test, we'll manually create the thumbnail file.
+        dummy_source_path = create_dummy_file(self.test_dir, image_name, content=b"dummy source for bad cache test")
+
+
+        # Generate and save a dummy thumbnail file to the new structure path
+        correct_relative_thumb_path = os.path.join(img_sha[:2], f"{img_sha}{media_scanner.THUMBNAIL_EXTENSION}")
+        physical_thumb_path = os.path.join(thumb_base_dir, correct_relative_thumb_path)
+        Image.new('RGB', media_scanner.THUMBNAIL_SIZE, 'teal').save(physical_thumb_path, 'PNG')
+        self.assertTrue(os.path.exists(physical_thumb_path), f"Physical thumbnail not found at {physical_thumb_path}")
+
+
+        # 2. Manually put an incorrect (flat) thumbnail_file path into the cache for this SHA
+        with MEDIA_DATA_LOCK:
+            MEDIA_DATA_CACHE[img_sha] = {
+                'filename': image_name, # Original filename on disk
+                'original_filename': image_name, # Filename as uploaded/named
+                'file_path': os.path.join("uploads", "some_day", image_name), # Relative path to source from storage_dir
+                'last_modified': time.time(),
+                'original_creation_date': time.time(),
+                'thumbnail_file': f"{img_sha}{media_scanner.THUMBNAIL_EXTENSION}" # Incorrect flat path
+            }
+            self.assertTrue(MEDIA_DATA_CACHE[img_sha]['thumbnail_file'] != correct_relative_thumb_path)
+
+
+        # 3. Attempt to GET the thumbnail
+        response = self.client.get(f'/thumbnail/{img_sha}')
+
+        # 4. Assert that the server found it using the corrected path logic in get_thumbnail
+        self.assertEqual(response.status_code, 200,
+                         f"Server should have found the thumbnail despite bad cache path. Status: {response.status_code}, Data length: {len(response.data)}")
+        self.assertEqual(response.content_type, 'image/png')
+
+        # Clean up dummy source and the specific cache entry
+        os.remove(dummy_source_path)
+        # Thumbnail file and its subdir will be cleaned by tearDown if this test is part of a class
+        # that cleans the whole self.test_dir. For safety, can remove here.
+        os.remove(physical_thumb_path)
+        if not os.listdir(sha_prefix_dir): # if dir is empty
+            os.rmdir(sha_prefix_dir)
+
+        with MEDIA_DATA_LOCK:
+            if img_sha in MEDIA_DATA_CACHE:
+                del MEDIA_DATA_CACHE[img_sha]
