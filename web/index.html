@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Gallery</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header>
+        <h1>Media Gallery</h1>
+    </header>
+    <main>
+        <div id="gallery-grid" class="gallery-grid">
+            <!-- Thumbnails will be loaded here by JavaScript -->
+        </div>
+    </main>
+
+    <div id="overlay-viewer" class="overlay-viewer" style="display: none;">
+        <button class="close-btn">&times;</button>
+        <img src="" alt="Full-sized media" id="overlay-image">
+        <button class="prev-btn">&lt;</button>
+        <button class="next-btn">&gt;</button>
+        <div class="caption"></div>
+    </div>
+
+    <footer>
+        <p>&copy; 2023 Media Server</p>
+    </footer>
+
+    <script src="js/main.js"></script>
+</body>
+</html>

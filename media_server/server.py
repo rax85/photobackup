@@ -37,8 +37,16 @@ except flags.Error:
 MEDIA_DATA_CACHE = {}
 MEDIA_DATA_LOCK = threading.Lock()
 
-# Create Flask app instance
-app = Flask(__name__)
+# Determine the absolute path to the project's root directory
+# Assuming server.py is in media_server/ and web/ is in the parent of media_server/
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+WEB_DIR_ABSOLUTE = os.path.join(PROJECT_ROOT, 'web')
+
+
+# Create Flask app instance, explicitly setting the static folder to our 'web' directory
+# and static_url_path to ensure files are served from the root (e.g. /css/style.css)
+app = Flask(__name__, static_folder=WEB_DIR_ABSOLUTE, static_url_path='')
+
 
 def reset_media_data_cache():
     """Clears the global MEDIA_DATA_CACHE in a thread-safe manner."""
@@ -70,6 +78,19 @@ def background_scanner_task():
             logging.info("Background rescan complete. Cache updated.")
         except Exception as e:
             logging.error(f"Error during background scan: {e}", exc_info=True)
+
+@app.route('/')
+def root():
+    """Serves the main index.html page from the static folder."""
+    # Flask, when static_folder is set, can serve files using send_static_file.
+    # However, if static_url_path is '', it automatically tries to serve 'index.html'
+    # from the static_folder when '/' is requested.
+    # If not, or to be explicit:
+    # return app.send_static_file('index.html')
+    # For this setup, simply defining static_folder and static_url_path=''
+    # and having an index.html in that folder is usually enough.
+    # Let's be explicit to ensure it works as intended.
+    return app.send_static_file('index.html')
 
 @app.route('/list', methods=['GET'])
 def list_media():
