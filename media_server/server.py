@@ -260,6 +260,48 @@ def get_image(sha256_hex):
         logging.error(f"Unexpected error serving image {file_path_relative} (SHA: {sha256_hex}): {e}", exc_info=True)
         abort(500, description="Internal server error while serving image.")
 
+@app.route('/image/sha256/<string:sha256_hex>', methods=['GET']) # New route
+def get_image_by_sha256(sha256_hex):
+    """Serves an image based on its SHA256 hash. Alias for /image/<sha256_hex> for clarity."""
+    # This function will be very similar to get_image
+    if not (len(sha256_hex) == 64 and all(c in '0123456789abcdefABCDEF' for c in sha256_hex)):
+        logging.warning(f"Invalid SHA256 format requested for image: {sha256_hex}")
+        abort(400, description="Invalid SHA256 format.")
+
+    with MEDIA_DATA_LOCK:
+        cached_data = MEDIA_DATA_CACHE.get(sha256_hex)
+
+    if not cached_data:
+        logging.info(f"Image SHA256 not found in cache: {sha256_hex}")
+        abort(404, description="Image not found (SHA unknown).")
+
+    file_path_relative = cached_data.get('file_path')
+    if not file_path_relative:
+        logging.error(f"Cache entry for SHA {sha256_hex} is missing 'file_path'. Cache data: {cached_data}")
+        abort(500, description="Server error: Image metadata incomplete.")
+
+    storage_dir_abs_path = app.config.get('STORAGE_DIR')
+    if not storage_dir_abs_path:
+        logging.error("STORAGE_DIR not configured in the application.")
+        abort(500, description="Server configuration error.")
+
+    full_file_path = os.path.join(storage_dir_abs_path, file_path_relative)
+    # Security check: Ensure the path is within the storage directory
+    if not os.path.normpath(full_file_path).startswith(os.path.normpath(storage_dir_abs_path) + os.sep) and \
+       not os.path.normpath(full_file_path) == os.path.normpath(storage_dir_abs_path):
+        logging.error(f"Potential directory traversal attempt for SHA {sha256_hex}. Path: {file_path_relative}")
+        abort(400, description="Invalid file path.")
+
+    from werkzeug.exceptions import NotFound # Import for specific exception handling
+    try:
+        logging.info(f"Attempting to serve image: {file_path_relative} from {storage_dir_abs_path} for SHA {sha256_hex} via /image/sha256/ endpoint")
+        return send_from_directory(storage_dir_abs_path, file_path_relative)
+    except NotFound:
+        logging.warning(f"Image file not found via send_from_directory: {file_path_relative} in {storage_dir_abs_path} (SHA: {sha256_hex})")
+        abort(404, description="Image file not found on disk.")
+    except Exception as e:
+        logging.error(f"Unexpected error serving image {file_path_relative} (SHA: {sha256_hex}): {e}", exc_info=True)
+        abort(500, description="Internal server error while serving image.")
 
 @app.route('/thumbnail/<string:sha256_hex>', methods=['GET'])
 def get_thumbnail(sha256_hex):

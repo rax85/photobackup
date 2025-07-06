@@ -560,6 +560,56 @@ class TestImageEndpoints(unittest.TestCase):
         response = self.client.get('/image/invalidsha123')
         self.assertEqual(response.status_code, 400)
 
+    # Tests for the new /image/sha256/<sha> endpoint
+    def test_get_image_by_sha256_endpoint_success(self):
+        """Test retrieving an image successfully using the new /image/sha256/ endpoint."""
+        image_name = "retrievable_new_route.jpg"
+        img_data, img_content_bytes, img_sha256 = self._create_dummy_image_bytes(text_content="retrievable_new_route_content", format="JPEG")
+
+        put_response = self.client.put(
+            f'/image/{image_name}', # Upload using the original endpoint
+            data={'file': (img_data, image_name)},
+            content_type='multipart/form-data'
+        )
+        self.assertEqual(put_response.status_code, 201)
+
+        # Now try to GET it using the new endpoint
+        get_response = self.client.get(f'/image/sha256/{img_sha256}')
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.data, img_content_bytes)
+        self.assertIn('image/jpeg', get_response.content_type.lower())
+
+    def test_get_image_by_sha256_endpoint_unknown_sha(self):
+        """Test new /image/sha256/ endpoint with an unknown SHA."""
+        response = self.client.get('/image/sha256/' + 'b'*64) # Valid format, unknown SHA
+        self.assertEqual(response.status_code, 404)
+
+    def test_get_image_by_sha256_endpoint_invalid_sha_format(self):
+        """Test new /image/sha256/ endpoint with an invalid SHA format."""
+        response = self.client.get('/image/sha256/invalidsha123')
+        self.assertEqual(response.status_code, 400)
+
+    def test_get_image_by_sha256_endpoint_file_deleted_after_cache(self):
+        """Test new /image/sha256/ GET when file is deleted from disk after being cached."""
+        image_name = "to_be_deleted_new_route.png"
+        img_data, _, img_sha256 = self._create_dummy_image_bytes("delete_me_new_route")
+
+        put_res = self.client.put(f'/image/{image_name}', data={'file': (img_data, image_name)}, content_type='multipart/form-data')
+        self.assertEqual(put_res.status_code, 201)
+
+        with MEDIA_DATA_LOCK:
+            cached_entry = MEDIA_DATA_CACHE.get(img_sha256)
+            self.assertIsNotNone(cached_entry)
+            file_to_delete_abs = os.path.join(flask_app.config['STORAGE_DIR'], cached_entry['file_path'])
+
+        self.assertTrue(os.path.exists(file_to_delete_abs))
+        os.remove(file_to_delete_abs) # Manually delete the file
+        self.assertFalse(os.path.exists(file_to_delete_abs))
+
+        get_response = self.client.get(f'/image/sha256/{img_sha256}')
+        self.assertEqual(get_response.status_code, 404)
+
+
     def test_get_image_file_deleted_after_cache(self):
         """Test GET when file is deleted from disk after being cached."""
         image_name = "to_be_deleted.png"
