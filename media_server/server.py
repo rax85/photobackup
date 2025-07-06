@@ -199,49 +199,49 @@ def put_image(filename):
         relative_file_path_for_cache = os.path.join(upload_subdir_rel, final_filename_on_disk)
 
         creation_time = time.time()
-        image_width, image_height = None, None
-        mime_type_upload, _ = mimetypes.guess_type(prospective_path_on_disk)
-
+        image_width = None
+        image_height = None
         try:
             from PIL import Image as PILImage # Local import to avoid circular deps if moved
             from PIL import ExifTags
 
-            with PILImage.open(prospective_path_on_disk) as img_pil:
-                image_width, image_height = img_pil.size
-                exif_data = img_pil.getexif()
-                if exif_data:
-                    for tag_id, value in exif_data.items():
-                        tag = ExifTags.TAGS.get(tag_id, tag_id)
-                        if tag == 'DateTimeOriginal':
-                            # Ensure value is a string before strptime
-                            if isinstance(value, str):
-                                try:
-                                    dt_obj = datetime.datetime.strptime(value, '%Y:%m:%d %H:%M:%S')
-                                    creation_time = dt_obj.timestamp()
-                                except ValueError:
-                                    logging.warning(f"Could not parse EXIF DateTimeOriginal '{value}' for {final_filename_on_disk}. Using current time.")
-                            elif isinstance(value, bytes): # Sometimes it can be bytes
-                                try:
-                                    dt_obj = datetime.datetime.strptime(value.decode('utf-8', errors='ignore'), '%Y:%m:%d %H:%M:%S')
-                                    creation_time = dt_obj.timestamp()
-                                except ValueError:
-                                     logging.warning(f"Could not parse EXIF DateTimeOriginal bytes '{value}' for {final_filename_on_disk}. Using current time.")
-                            else:
-                                logging.warning(f"Unexpected type for EXIF DateTimeOriginal: {type(value)} for {final_filename_on_disk}")
-                            break # Found DateTimeOriginal
+            # Open the image using Pillow to get dimensions and EXIF data
+            # We need to use prospective_path_on_disk as file_contents is already read
+            img_pil = PILImage.open(prospective_path_on_disk)
+            image_width = img_pil.width
+            image_height = img_pil.height
+
+            exif_data = img_pil.getexif()
+            if exif_data:
+                for tag_id, value in exif_data.items():
+                    tag = ExifTags.TAGS.get(tag_id, tag_id)
+                    if tag == 'DateTimeOriginal':
+                        # Ensure value is a string before strptime
+                        if isinstance(value, str):
+                            try:
+                                dt_obj = datetime.datetime.strptime(value, '%Y:%m:%d %H:%M:%S')
+                                creation_time = dt_obj.timestamp()
+                            except ValueError:
+                                logging.warning(f"Could not parse EXIF DateTimeOriginal '{value}' for {final_filename_on_disk}.")
+                        elif isinstance(value, bytes):
+                             try:
+                                dt_obj = datetime.datetime.strptime(value.decode('utf-8', errors='ignore'), '%Y:%m:%d %H:%M:%S')
+                                creation_time = dt_obj.timestamp()
+                             except ValueError:
+                                logging.warning(f"Could not parse EXIF DateTimeOriginal bytes '{value}' for {final_filename_on_disk}.")
+                        break
         except Exception as e:
-            logging.debug(f"Could not read EXIF data or dimensions for {final_filename_on_disk}: {e}. Using current time as creation_date.")
+            logging.debug(f"Could not read EXIF data or dimensions for {final_filename_on_disk}: {e}. Using current time as creation_date and no dimensions.")
 
         MEDIA_DATA_CACHE[sha256_hash] = {
             'filename': final_filename_on_disk,
-            'original_filename': filename, # This should be s_filename or original_filename_unsafe
+            'original_filename': filename, # This should be original_filename_unsafe or a sanitized version of it
             'file_path': relative_file_path_for_cache,
-            'last_modified': time.time(), # This should ideally be from file system if possible, or upload time
+            'last_modified': time.time(), # This is upload time, not file modification time on disk
             'original_creation_date': creation_time,
             'thumbnail_file': thumbnail_file_name_only,
             'width': image_width,
-            'height': image_height,
-            'content_type': mime_type_upload
+            'height': image_height
         }
         logging.info(f"Cache updated for SHA256: {sha256_hash} with file {final_filename_on_disk}, dims: {image_width}x{image_height}")
 
@@ -250,7 +250,9 @@ def put_image(filename):
             "sha256": sha256_hash,
             "filename": final_filename_on_disk,
             "file_path": relative_file_path_for_cache,
-            "thumbnail_file": thumbnail_file_name_only
+            "thumbnail_file": thumbnail_file_name_only,
+            "width": image_width,
+            "height": image_height
         }), 201
 
 @app.route('/image/<string:sha256_hex>', methods=['GET'])

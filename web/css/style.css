@@ -58,8 +58,6 @@ main {
     display: block;
 }
 
-/* Old Overlay Viewer Styles removed as PhotoSwipe handles the overlay now. */
-
 footer {
     text-align: center;
     padding: 1.5rem;
@@ -84,7 +82,21 @@ footer {
     main {
         padding: 0.5rem;
     }
-    /* Old overlay responsive styles removed */
+    .overlay-viewer .close-btn {
+        top: 15px;
+        right: 15px;
+        width: 36px;
+        height: 36px;
+        font-size: 1.5rem;
+    }
+    .overlay-viewer .prev-btn,
+    .overlay-viewer .next-btn {
+        width: 36px;
+        height: 36px;
+        font-size: 1.2rem;
+    }
+    .overlay-viewer .prev-btn { left: 10px; }
+    .overlay-viewer .next-btn { right: 10px; }
 }
 
 @media (max-width: 480px) {

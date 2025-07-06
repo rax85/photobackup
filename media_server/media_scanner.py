@@ -339,11 +339,9 @@ def scan_directory(storage_dir: str,
                             filesystem_creation_time = os.path.getctime(abs_file_path)
                             original_creation_date = filesystem_creation_time # Default
 
-                            image_width, image_height = None, None
                             if mime_type and mime_type.startswith('image/'):
                                 try:
                                     with Image.open(abs_file_path) as img:
-                                        image_width, image_height = img.size
                                         exif_data = img.getexif()
                                         if exif_data:
                                             date_time_original_tag = 36867 # DateTimeOriginal
@@ -352,7 +350,7 @@ def scan_directory(storage_dir: str,
                                                 dt_object = datetime.strptime(exif_date_str, '%Y:%m:%d %H:%M:%S')
                                                 original_creation_date = dt_object.timestamp()
                                 except Exception as exif_e:
-                                    logging.warning(f"Could not read EXIF or dimensions for {abs_file_path}: {exif_e}. Using filesystem time for creation_date.")
+                                    logging.warning(f"Could not read EXIF for {abs_file_path}: {exif_e}. Using filesystem time.")
 
                             entry_data = {
                                 'filename': disk_filename, # Actual name on disk
@@ -361,12 +359,21 @@ def scan_directory(storage_dir: str,
                                 'last_modified': last_modified,
                                 'original_creation_date': original_creation_date,
                                 'thumbnail_file': thumbnail_relative_path, # Store the relative path
-                                'width': image_width,
-                                'height': image_height,
-                                'content_type': mime_type # Also useful for the frontend
+                                'width': None, # Placeholder for width
+                                'height': None # Placeholder for height
                             }
+
+                            if mime_type and mime_type.startswith('image/'):
+                                try:
+                                    with Image.open(abs_file_path) as img:
+                                        entry_data['width'] = img.width
+                                        entry_data['height'] = img.height
+                                        # EXIF reading is already here, so just ensure it's before this block or integrated
+                                except Exception as img_e:
+                                    logging.warning(f"Could not read image dimensions for {abs_file_path}: {img_e}")
+
                             current_media_data[sha256_hex] = entry_data
-                            logging.debug(f"Cache ADDED/UPDATED for SHA: {sha256_hex}, file: {disk_filename}, path: {rel_file_path}, thumb: {thumbnail_relative_path}, dims: {image_width}x{image_height}")
+                            logging.debug(f"Cache ADDED/UPDATED for SHA: {sha256_hex}, file: {disk_filename}, path: {rel_file_path}, thumb: {thumbnail_relative_path}, dims: {entry_data['width']}x{entry_data['height']}")
                             # Add to known_file_paths if it's a new path being processed in this walk
                             known_file_paths.add(rel_file_path)
 

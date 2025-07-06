@@ -1,11 +1,8 @@
-import PhotoSwipeLightbox from '/lib/photoswipe/photoswipe-lightbox.esm.js';
-import PhotoSwipe from '/lib/photoswipe/photoswipe.esm.js';
+import PhotoSwipeLightbox from './lib/photoswipe/dist/photoswipe-lightbox.esm.js';
 
 document.addEventListener('DOMContentLoaded', () => {
     const galleryGrid = document.getElementById('gallery-grid');
-
     let mediaItems = []; // To store all media data from /list
-    let lightbox;
 
     // Function to fetch media list
     async function fetchMediaList() {
@@ -17,25 +14,26 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
             mediaItems = Object.entries(data).map(([sha256, itemData]) => ({
                 sha256,
-                src: `/image/${sha256}`, // URL for full image
-                thumbnail: `/thumbnail/${sha256}`, // URL for thumbnail
-                width: itemData.width, // Expected from backend update
-                height: itemData.height, // Expected from backend update
-                alt: itemData.filename || 'Media file',
-                ...itemData // Keep other data if needed (e.g., for captions if we add them later)
+                ...itemData
             }));
             // Sort by original creation date, newest first
             mediaItems.sort((a, b) => (b.original_creation_date || 0) - (a.original_creation_date || 0));
             displayMedia();
-            initPhotoSwipe();
+            initializePhotoSwipe();
         } catch (error) {
             console.error("Error fetching media list:", error);
-            galleryGrid.innerHTML = '<p>Error loading media. Please try again later.</p>';
+            if (galleryGrid) {
+                galleryGrid.innerHTML = '<p>Error loading media. Please try again later.</p>';
+            }
         }
     }
 
     // Function to display media in the gallery
     function displayMedia() {
+        if (!galleryGrid) {
+            console.error('Gallery grid not found');
+            return;
+        }
         if (!mediaItems.length) {
             galleryGrid.innerHTML = '<p>No media found.</p>';
             return;
@@ -44,17 +42,25 @@ document.addEventListener('DOMContentLoaded', () => {
         galleryGrid.innerHTML = ''; // Clear previous items
 
         mediaItems.forEach((item) => {
+            // Ensure width and height are available and are numbers
+            if (typeof item.width !== 'number' || typeof item.height !== 'number' || item.width <= 0 || item.height <= 0) {
+                console.warn('Missing or invalid dimensions for item:', item.filename, item.sha256, `Dims: ${item.width}x${item.height}`);
+                // Optionally skip this item or use default dimensions
+                // For now, we'll skip it to avoid PhotoSwipe errors
+                return;
+            }
+
             const galleryLink = document.createElement('a');
-            galleryLink.href = item.src;
-            galleryLink.dataset.pswpWidth = item.width || 1200; // Fallback width if not provided
-            galleryLink.dataset.pswpHeight = item.height || 800; // Fallback height if not provided
-            galleryLink.dataset.pswpType = item.content_type && item.content_type.startsWith('video/') ? 'video' : 'image'; // Basic type detection
-            galleryLink.target = '_blank'; // Good practice for links
-            galleryLink.className = 'gallery-item'; // Apply styling directly to the link
+            galleryLink.href = `/image/${item.sha256}`;
+            galleryLink.dataset.pswpWidth = item.width;
+            galleryLink.dataset.pswpHeight = item.height;
+            galleryLink.dataset.cropped = 'true'; // Assuming thumbnails might be cropped
+            galleryLink.target = '_blank'; // Fallback for no JS or PhotoSwipe error
+            galleryLink.className = 'gallery-item'; // Use existing styling for the link container
 
             const img = document.createElement('img');
-            img.src = item.thumbnail;
-            img.alt = item.alt;
+            img.src = `/thumbnail/${item.sha256}`;
+            img.alt = item.filename || 'Media thumbnail';
             img.loading = 'lazy';
 
             galleryLink.appendChild(img);
@@ -62,37 +68,16 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function initPhotoSwipe() {
-        if (lightbox) {
-            lightbox.destroy();
-        }
-        lightbox = new PhotoSwipeLightbox({
+    function initializePhotoSwipe() {
+        if (!galleryGrid) return;
+
+        const lightbox = new PhotoSwipeLightbox({
             gallery: '#gallery-grid',
             children: 'a',
-            pswpModule: PhotoSwipe,
-            // Optional: show hide opacity option, since we removed the old overlay
-            showHideAnimationType: 'fade', /* default is 'zoom' */
-            // Optional: adjust preloader
-            preloaderDelay: 500, // Show preloader after 0.5s
+            pswpModule: () => import('./lib/photoswipe/dist/photoswipe.esm.js'),
+            // Optional: Add a little margin around the image
+            padding: { top: 20, bottom: 20, left: 20, right: 20 }
         });
-
-        // Optional: Add custom caption - PhotoSwipe 5 doesn't have built-in caption support in core
-        // lightbox.on('uiRegister', function() {
-        //   lightbox.pswp.ui.registerElement({
-        //     name: 'custom-caption',
-        //     order: 9,
-        //     isButton: false,
-        //     appendTo: 'root',
-        //     html: 'Caption text',
-        //     onInit: (el, pswp) => {
-        //       lightbox.pswp.on('change', () => {
-        //         const currSlideElement = lightbox.pswp.currSlide.data;
-        //         el.innerHTML = currSlideElement.alt || '';
-        //       });
-        //     }
-        //   });
-        // });
-
         lightbox.init();
     }
 
