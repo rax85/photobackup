@@ -1,4 +1,4 @@
-import PhotoSwipeLightbox from './lib/photoswipe/dist/photoswipe-lightbox.esm.js';
+import PhotoSwipeLightbox from '../lib/photoswipe/dist/photoswipe-lightbox.esm.js';
 
 document.addEventListener('DOMContentLoaded', () => {
     const galleryGrid = document.getElementById('gallery-grid');
@@ -74,7 +74,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const lightbox = new PhotoSwipeLightbox({
             gallery: '#gallery-grid',
             children: 'a',
-            pswpModule: () => import('./lib/photoswipe/dist/photoswipe.esm.js'),
+            pswpModule: () => import('../lib/photoswipe/dist/photoswipe.esm.js'),
             // Optional: Add a little margin around the image
             padding: { top: 20, bottom: 20, left: 20, right: 20 }
         });
