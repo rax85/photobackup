@@ -1,5 +1,5 @@
-import PhotoSwipeLightbox from './lib/photoswipe/photoswipe-lightbox.esm.js';
-import PhotoSwipe from './lib/photoswipe/photoswipe.esm.js';
+import PhotoSwipeLightbox from '/lib/photoswipe/photoswipe-lightbox.esm.js';
+import PhotoSwipe from '/lib/photoswipe/photoswipe.esm.js';
 
 document.addEventListener('DOMContentLoaded', () => {
     const galleryGrid = document.getElementById('gallery-grid');
