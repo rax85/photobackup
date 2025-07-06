@@ -3,3 +3,4 @@ requests
 Pillow
 Flask
 Werkzeug
+pillow-heif

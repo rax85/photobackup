@@ -5,9 +5,13 @@ from absl import logging
 from typing import Dict, Optional, Tuple
 from PIL import Image, ImageOps, ExifTags
 from datetime import datetime
+from pillow_heif import register_heif_opener
 
 # Initialize mimetypes database
 mimetypes.init()
+
+# Register HEIF opener for Pillow
+register_heif_opener()
 
 THUMBNAIL_DIR_NAME = ".thumbnails"
 THUMBNAIL_SIZE = (256, 256)
