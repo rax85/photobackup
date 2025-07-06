@@ -19,8 +19,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }));
             // Sort by original creation date, newest first
             mediaItems.sort((a, b) => (b.original_creation_date || 0) - (a.original_creation_date || 0));
-            displayMedia();
+
+            const groupedMedia = groupMediaByMonthYear(mediaItems);
+            displayMedia(groupedMedia); // Pass grouped media to display function
             initializePhotoSwipe();
+            displayNavigationSidebar(groupedMedia); // Call the new function
         } catch (error) {
             console.error("Error fetching media list:", error);
             if (galleryGrid) {
@@ -29,51 +32,125 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Function to display media in the gallery
-    function displayMedia() {
+    // Function to group media by month and year
+    function groupMediaByMonthYear(items) {
+        const groups = new Map(); // Use Map to preserve insertion order (chronological)
+        items.forEach(item => {
+            if (item.original_creation_date === null || typeof item.original_creation_date === 'undefined') {
+                console.warn('Item has no original_creation_date, placing in "Unknown Date" group:', item);
+                const monthYearKey = "Unknown Date";
+                 if (!groups.has(monthYearKey)) {
+                    groups.set(monthYearKey, []);
+                }
+                groups.get(monthYearKey).push(item);
+                return; // Skip to next item
+            }
+            const date = new Date(item.original_creation_date * 1000); // Convert Unix timestamp to milliseconds
+            const monthYearKey = date.toLocaleString('default', { month: 'long', year: 'numeric' });
+
+            if (!groups.has(monthYearKey)) {
+                groups.set(monthYearKey, []);
+            }
+            groups.get(monthYearKey).push(item);
+        });
+        return groups;
+    }
+
+    // Function to display media in the gallery (now expects groupedMedia)
+    function displayMedia(groupedMedia) { //parameter changed from mediaItems
         if (!galleryGrid) {
             console.error("Gallery grid element not found.");
             return;
         }
-        if (!mediaItems.length) {
-            galleryGrid.innerHTML = '<p>No media found.</p>';
+        // Check if groupedMedia is empty or not provided
+        if (!groupedMedia || groupedMedia.size === 0) {
+             // Check if mediaItems (the original flat list) is also empty
+            if (!mediaItems || mediaItems.length === 0) {
+                galleryGrid.innerHTML = '<p>No media found.</p>';
+            } else {
+                // This case means grouping failed or resulted in empty groups from non-empty items, which is unlikely with "Unknown Date" handling
+                galleryGrid.innerHTML = '<p>No media groups to display. Check console for errors.</p>';
+                console.warn("displayMedia called with empty/null groupedMedia, but mediaItems exist:", mediaItems);
+            }
             return;
         }
 
-        galleryGrid.innerHTML = ''; // Clear previous items
+        galleryGrid.innerHTML = ''; // Clear previous items for fresh rendering
 
-        mediaItems.forEach((item) => {
-            // Create the <a> tag for PhotoSwipe
-            const link = document.createElement('a');
-            link.href = `/image/${item.sha256}`;
-            link.dataset.pswpWidth = item.width;
-            link.dataset.pswpHeight = item.height;
-            // link.target = '_blank'; // Optional: open in new tab if JS fails
+        // Iterate over groupedMedia (Map) which preserves the order of months
+        // (since mediaItems were pre-sorted and Map maintains insertion order)
+        for (const [monthYear, itemsInGroup] of groupedMedia) {
+            // Create a URL-friendly ID for the section. Handles spaces and various characters.
+            const sectionId = `section-${monthYear.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase()}`;
 
-            // Create the <img> thumbnail
-            const img = document.createElement('img');
-            img.src = `/thumbnail/${item.sha256}`;
-            img.alt = item.filename || 'Media thumbnail';
-            img.loading = 'lazy';
+            const monthSectionDiv = document.createElement('div');
+            monthSectionDiv.className = 'month-section';
+            monthSectionDiv.id = sectionId; // ID for direct navigation
 
-            link.appendChild(img);
+            const titleHeader = document.createElement('h2');
+            titleHeader.className = 'month-year-divider-header'; // Class for styling the header
+            titleHeader.textContent = monthYear;
+            monthSectionDiv.appendChild(titleHeader);
 
-            // Create a div wrapper for styling if needed (like the old .gallery-item)
-            const galleryItemWrapper = document.createElement('div');
-            galleryItemWrapper.className = 'gallery-item'; // Keep existing class for styling grid
-            galleryItemWrapper.appendChild(link);
+            const hr = document.createElement('hr');
+            hr.className = 'month-divider-line'; // Class for styling the <hr>
+            monthSectionDiv.appendChild(hr);
 
-            galleryGrid.appendChild(galleryItemWrapper);
-        });
+            const monthGridDiv = document.createElement('div');
+            // Apply existing gallery-grid class for base grid styling,
+            // and gallery-grid-month for any month-specific tweaks if needed.
+            monthGridDiv.className = 'gallery-grid gallery-grid-month';
+            monthSectionDiv.appendChild(monthGridDiv);
+
+            itemsInGroup.forEach((item) => {
+                const link = document.createElement('a');
+                link.href = `/image/${item.sha256}`;
+
+                // Use actual dimensions if available and valid, otherwise let PhotoSwipe auto-detect (by setting to 0 or omitting)
+                let pswpWidth = 0;
+                let pswpHeight = 0;
+
+                if (item.width && Number.isFinite(item.width) && item.width > 0) {
+                    pswpWidth = item.width;
+                } else {
+                    console.warn(`Item ${item.sha256} missing or has invalid width: ${item.width}. PhotoSwipe will attempt to auto-detect.`);
+                }
+
+                if (item.height && Number.isFinite(item.height) && item.height > 0) {
+                    pswpHeight = item.height;
+                } else {
+                    console.warn(`Item ${item.sha256} missing or has invalid height: ${item.height}. PhotoSwipe will attempt to auto-detect.`);
+                }
+
+                link.dataset.pswpWidth = pswpWidth;
+                link.dataset.pswpHeight = pswpHeight;
+                link.dataset.filename = item.filename || 'Media file';
+
+                const img = document.createElement('img');
+                img.src = `/thumbnail/${item.sha256}`;
+                img.alt = item.filename || 'Media thumbnail';
+                img.loading = 'lazy';
+                link.appendChild(img);
+
+                const galleryItemWrapper = document.createElement('div');
+                galleryItemWrapper.className = 'gallery-item'; // This class styles individual items
+                galleryItemWrapper.appendChild(link);
+                monthGridDiv.appendChild(galleryItemWrapper); // Append item to the month-specific grid
+            });
+            galleryGrid.appendChild(monthSectionDiv); // Append the entire month section to the main gallery container
+        }
     }
 
     function initializePhotoSwipe() {
         if (lightbox) {
             lightbox.destroy(); // Destroy existing instance if any
         }
+        // The main galleryGrid element is the top-level container passed to PhotoSwipe.
+        // The `children` selector tells PhotoSwipe where to find the <a> tags within that container.
+        // Since <a> tags are now inside .gallery-item divs, this selector is more specific.
         lightbox = new PhotoSwipeLightbox({
-            gallery: '#gallery-grid', // Parent element of slides
-            children: 'a',          // Children elements that trigger PhotoSwipe
+            gallery: '#gallery-grid',
+            children: '.gallery-item > a', // Find <a> tags that are direct children of .gallery-item
             pswpModule: () => import('./photoswipe.esm.js'),
             // Optional: Add caption plugin
             // dataSource: mediaItems.map(item => ({
@@ -160,6 +237,47 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log("No media items to check for PhotoSwipe attributes.");
             }
         }, 1000); // Delay to allow DOM update
+    }
+
+    function displayNavigationSidebar(groupedMedia) {
+        const sidebar = document.getElementById('navigation-sidebar');
+        if (!sidebar) {
+            console.error("Navigation sidebar element not found.");
+            return;
+        }
+        sidebar.innerHTML = ''; // Clear previous links
+
+        if (!groupedMedia || groupedMedia.size === 0) {
+            sidebar.innerHTML = '<p>No dates to navigate.</p>'; // Or just leave it empty
+            return;
+        }
+
+        const navList = document.createElement('ul'); // Use a list for semantic navigation links
+
+        for (const monthYear of groupedMedia.keys()) {
+            const listItem = document.createElement('li');
+            const link = document.createElement('a');
+
+            // Generate sectionId to match the one created in displayMedia
+            const sectionId = `section-${monthYear.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase()}`;
+            link.href = `#${sectionId}`;
+            link.textContent = monthYear;
+
+            link.addEventListener('click', function(event) {
+                event.preventDefault();
+                const targetId = this.getAttribute('href').substring(1);
+                const targetElement = document.getElementById(targetId);
+                if (targetElement) {
+                    targetElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                    console.warn(`Target element with ID '${targetId}' not found for sidebar navigation.`);
+                }
+            });
+
+            listItem.appendChild(link);
+            navList.appendChild(listItem);
+        }
+        sidebar.appendChild(navList);
     }
 
     // Initial fetch
