@@ -160,6 +160,8 @@ class TestMediaScanner(unittest.TestCase):
         self.assertTrue(media_scanner.is_media_file("test.mp4"))
         self.assertTrue(media_scanner.is_media_file("test.avi"))
         self.assertTrue(media_scanner.is_media_file("test.mov"))
+        self.assertTrue(media_scanner.is_media_file("test.heic"))
+        self.assertTrue(media_scanner.is_media_file("test.heif"))
         self.assertFalse(media_scanner.is_media_file("test.txt"))
         self.assertFalse(media_scanner.is_media_file("test.doc"))
         self.assertFalse(media_scanner.is_media_file("test.xyz")) # Unknown extension
@@ -182,7 +184,11 @@ class TestMediaScanner(unittest.TestCase):
         result = media_scanner.scan_directory(os.path.join(self.test_dir, "does_not_exist"))
         self.assertEqual(result, {})
 
-    def _assert_thumbnail_properties(self, base_thumbnail_dir, relative_thumb_path, original_image_path, expected_sha):
+    def _assert_thumbnail_properties(self, base_thumbnail_dir, relative_thumb_path, original_image_source, expected_sha):
+        """
+        Asserts properties of a generated thumbnail.
+        original_image_source: Can be a file path (str) or a PIL Image object.
+        """
         # relative_thumb_path is like "ab/abcdef123.png"
         # base_thumbnail_dir is like "/tmp/test_dir/.thumbnails"
         full_thumb_path = os.path.join(base_thumbnail_dir, relative_thumb_path)
@@ -201,9 +207,18 @@ class TestMediaScanner(unittest.TestCase):
             self.assertEqual(thumb_img.size, media_scanner.THUMBNAIL_SIZE, "Thumbnail dimensions are incorrect.")
             self.assertEqual(thumb_img.format, 'PNG', "Thumbnail format is not PNG.")
 
-            with Image.open(original_image_path) as orig_img:
+            opened_original_image = None
+            if isinstance(original_image_source, str):
+                opened_original_image = Image.open(original_image_source)
+                orig_img_to_process = opened_original_image
+            elif isinstance(original_image_source, Image.Image):
+                orig_img_to_process = original_image_source # It's already an Image object
+            else:
+                self.fail(f"Unsupported original_image_source type: {type(original_image_source)}")
+
+            try:
                 # Simulate the resize dimensions that would occur in generate_thumbnail
-                temp_orig_for_sim = orig_img.copy()
+                temp_orig_for_sim = orig_img_to_process.copy()
                 temp_orig_for_sim.thumbnail(media_scanner.THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
                 pasted_w, pasted_h = temp_orig_for_sim.size
 
@@ -236,6 +251,9 @@ class TestMediaScanner(unittest.TestCase):
                                          f"Center pixel of pasted image area ({center_of_pasted_x},{center_of_pasted_y}) is transparent. Pasted dims: {pasted_w}x{pasted_h}")
                 elif pasted_w > 0 and pasted_h > 0 :
                     self.fail(f"Calculated center of pasted image ({center_of_pasted_x},{center_of_pasted_y}) is outside thumbnail dimensions ({thumb_target_w}x{thumb_target_h}). Pasted: {pasted_w}x{pasted_h}")
+            finally:
+                if opened_original_image: # Close the image if we opened it from a path
+                    opened_original_image.close()
 
 
     def test_scan_directory_initial_scan_and_thumbnails(self):
@@ -471,6 +489,69 @@ class TestMediaScanner(unittest.TestCase):
         self.assertTrue(os.path.exists(non_thumbnail_file_in_root_path), "Non-thumbnail file in .thumbnails root should remain.")
         self.assertFalse(os.path.exists(empty_thumb_subdir), "Empty thumbnail subdirectory should be removed.")
         self.assertTrue(os.path.isdir(self.thumbnail_dir_path), ".thumbnails directory itself should not be removed.")
+
+    def test_scan_directory_heic_image(self):
+        """Tests scanning and thumbnail generation for a HEIC image."""
+        # NOTE: This test uses a mock for PIL.Image.open for HEIC files because
+        # creating actual HEIC files programmatically is complex.
+        # For more robust testing, replace 'dummy.heic' with a real, small HEIC file
+        # and remove the mock if pillow-heif is expected to handle it directly.
+
+        heic_filename = "test_image.heic"
+        heic_content = b"simulated heic content" # Content doesn't matter due to mock
+        heic_mtime = time.time() - 250
+
+        # Create a dummy HEIC file. Its content doesn't need to be a real HEIC for this mocked test.
+        file_heic_path = create_dummy_file(
+            self.test_dir, heic_filename, content=heic_content, mtime=heic_mtime
+        )
+        # The hash will be of the dummy content, which is fine for testing the scanner logic.
+        hash_heic = calculate_sha256_file(file_heic_path)
+
+        # Create a mock PIL Image object that Image.open will return for the HEIC file
+        mock_heic_image = Image.new('RGB', (100, 150), 'purple')
+
+        original_image_open = Image.open # Keep a reference to the original Image.open
+
+        def mock_image_open(fp, mode='r'):
+            if isinstance(fp, str) and fp.endswith('.heic'):
+                # Return a copy so that operations within generate_thumbnail (like close) don't affect the mock
+                return mock_heic_image.copy()
+            return original_image_open(fp, mode=mode)
+
+        with unittest.mock.patch('PIL.Image.open', side_effect=mock_image_open) as mock_open:
+            # Also need to mock getexif if we want to control that part for HEIC
+            # For this test, assume no EXIF or default behavior is fine.
+            # If specific EXIF handling for HEIC is needed, mock_heic_image.getexif could be set.
+            mock_heic_image.getexif = mock.Mock(return_value=None) # No EXIF for this test case
+
+            result = media_scanner.scan_directory(self.test_dir)
+
+        self.assertIn(hash_heic, result, "HEIC image hash not found in scan results.")
+        heic_data = result[hash_heic]
+        self.assertEqual(heic_data['filename'], heic_filename)
+        self.assertEqual(heic_data['file_path'], heic_filename) # Relative to test_dir
+        self.assertAlmostEqual(heic_data['last_modified'], heic_mtime, places=7)
+        # Default to ctime if no EXIF
+        self.assertAlmostEqual(heic_data['original_creation_date'], os.path.getctime(file_heic_path), places=7)
+
+
+        expected_thumb_rel_path = os.path.join(hash_heic[:2], hash_heic + media_scanner.THUMBNAIL_EXTENSION)
+        self.assertEqual(heic_data['thumbnail_file'], expected_thumb_rel_path)
+
+        # Verify the thumbnail was actually created and has correct properties
+        # Pass the mock_heic_image directly, as file_heic_path is a dummy file.
+        self._assert_thumbnail_properties(self.thumbnail_dir_path, expected_thumb_rel_path, mock_heic_image, hash_heic)
+
+        # Check that Image.open was called for our HEIC file
+        # Check if any call to mock_open had the heic_file_path as its first argument
+        was_called_with_heic_path = False
+        for call_args in mock_open.call_args_list:
+            args, _ = call_args
+            if args and args[0] == file_heic_path:
+                was_called_with_heic_path = True
+                break
+        self.assertTrue(was_called_with_heic_path, f"PIL.Image.open was not called with the HEIC file path: {file_heic_path}")
 
 
     def test_thumbnail_generation_for_image_in_subdir(self):
