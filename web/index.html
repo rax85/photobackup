@@ -16,8 +16,24 @@
             </svg>
             Media Gallery
         </h1>
+        <button id="uploadButton" class="upload-btn" aria-label="Upload files">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="24px" height="24px">
+                <path d="M0 0h24v24H0z" fill="none"/>
+                <path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/>
+            </svg>
+        </button>
+        <input type="file" id="fileInput" multiple style="display: none;">
     </header>
     <main>
+        <div id="uploadProgressOverlay" class="upload-overlay" style="display: none;">
+            <div class="upload-dialog">
+                <h2>Uploading Files</h2>
+                <p id="uploadProgressText">Progress: 0/0</p>
+                <div class="progress-bar-container">
+                    <div id="progressBar" class="progress-bar"></div>
+                </div>
+            </div>
+        </div>
         <div id="gallery-container"> <!-- Added a wrapper for gallery and sidebar -->
             <div id="gallery-grid" class="gallery-grid">
                 <!-- Thumbnails will be loaded here by JavaScript -->

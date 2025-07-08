@@ -282,4 +282,90 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial fetch
     fetchMediaList();
+
+    // Upload functionality
+    const uploadButton = document.getElementById('uploadButton');
+    const fileInput = document.getElementById('fileInput');
+    const uploadProgressOverlay = document.getElementById('uploadProgressOverlay');
+    const uploadProgressText = document.getElementById('uploadProgressText');
+    const progressBar = document.getElementById('progressBar');
+
+    if (uploadButton && fileInput && uploadProgressOverlay && uploadProgressText && progressBar) {
+        uploadButton.addEventListener('click', () => {
+            fileInput.click(); // Trigger hidden file input
+        });
+
+        fileInput.addEventListener('change', async (event) => {
+            const files = event.target.files;
+            if (files.length === 0) {
+                return;
+            }
+
+            uploadProgressOverlay.style.display = 'flex';
+            let filesUploaded = 0;
+            const totalFiles = files.length;
+            uploadProgressText.textContent = `Preparing to upload ${totalFiles} file(s)...`;
+            progressBar.style.width = '0%';
+
+            for (let i = 0; i < totalFiles; i++) {
+                const file = files[i];
+                uploadProgressText.textContent = `Uploading ${file.name} (${filesUploaded + 1} of ${totalFiles})...`;
+
+                const formData = new FormData();
+                formData.append('file', file, file.name); // 'file' is a common field name, server must expect this
+
+                try {
+                    const response = await fetch('/put', { // Endpoint as per user requirement
+                        method: 'PUT',
+                        body: formData,
+                        // Headers like 'Content-Type': 'multipart/form-data' are usually set automatically by fetch for FormData
+                        // If the server expects 'Content-Disposition' or filename in a specific way, this might need adjustment
+                    });
+
+                    if (!response.ok) {
+                        // Try to get error message from server response
+                        let errorMsg = `HTTP error! status: ${response.status}`;
+                        try {
+                            const errorData = await response.json();
+                            errorMsg = errorData.error || errorMsg;
+                        } catch (e) { /* ignore if response is not json */ }
+                        throw new Error(errorMsg);
+                    }
+
+                    // Assuming server returns JSON with a success message or details
+                    // const result = await response.json();
+                    // console.log(`Uploaded ${file.name}:`, result);
+
+                    filesUploaded++;
+                    const progressPercentage = (filesUploaded / totalFiles) * 100;
+                    progressBar.style.width = `${progressPercentage}%`;
+                    uploadProgressText.textContent = `Uploaded ${file.name} (${filesUploaded} of ${totalFiles}).`;
+
+                } catch (error) {
+                    console.error(`Error uploading ${file.name}:`, error);
+                    uploadProgressText.textContent = `Error uploading ${file.name}: ${error.message}. Stopping.`;
+                    // Optionally, allow user to close dialog or retry
+                    // For now, just stop and leave the dialog open with the error
+                    fileInput.value = ''; // Reset file input
+                    return; // Stop uploading further files on error
+                }
+            }
+
+            if (filesUploaded === totalFiles) {
+                uploadProgressText.textContent = `Successfully uploaded ${totalFiles} file(s)!`;
+                progressBar.style.width = '100%';
+                fetchMediaList(); // Refresh gallery
+            }
+
+            setTimeout(() => {
+                uploadProgressOverlay.style.display = 'none';
+                progressBar.style.width = '0%'; // Reset progress bar
+                uploadProgressText.textContent = 'Progress: 0/0'; // Reset text
+            }, 3000); // Hide overlay after 3 seconds
+
+            fileInput.value = ''; // Reset file input to allow selecting the same file again
+        });
+    } else {
+        console.error('Upload UI elements not found. Upload functionality will not work.');
+    }
 });
