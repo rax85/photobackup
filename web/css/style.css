@@ -21,6 +21,9 @@ header {
     position: sticky; /* Make header sticky */
     top: 0;
     z-index: 1000; /* Ensure it's above other content */
+    display: flex; /* Use flexbox for alignment */
+    justify-content: space-between; /* Push title to left and button to right */
+    align-items: center; /* Vertically align items */
 }
 
 header h1 {
@@ -216,4 +219,93 @@ footer {
     #navigation-sidebar {
         max-height: 150px; /* Further reduce height on very small screens */
     }
+    header {
+        padding: 0.8rem 1rem; /* Adjust header padding for smaller screens */
+    }
+    header h1 {
+        font-size: 1.3rem; /* Adjust title font size */
+    }
+    .upload-btn {
+        padding: 0.4rem 0.6rem; /* Adjust button padding */
+    }
+    .upload-btn svg {
+        width: 20px; /* Adjust icon size */
+        height: 20px;
+    }
+}
+
+/* Upload Button Styles */
+.upload-btn {
+    background-color: #007aff; /* Apple blue */
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.2s ease-in-out, transform 0.1s ease-in-out;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.upload-btn:hover {
+    background-color: #005ecb; /* Darker blue on hover */
+}
+
+.upload-btn:active {
+    background-color: #004a9e; /* Even darker blue on active/click */
+    transform: scale(0.98); /* Slight press effect */
+}
+
+.upload-btn svg {
+    fill: currentColor; /* Inherit color from button text (white) */
+}
+
+/* Upload Progress Overlay Styles */
+.upload-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7); /* Semi-transparent background */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 2000; /* Ensure it's above everything */
+}
+
+.upload-dialog {
+    background-color: #fff;
+    padding: 2rem;
+    border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    text-align: center;
+    width: 90%;
+    max-width: 400px;
+}
+
+.upload-dialog h2 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+    color: #333;
+}
+
+.upload-dialog p {
+    margin-bottom: 1.5rem;
+    color: #555;
+}
+
+.progress-bar-container {
+    background-color: #e0e0e0;
+    border-radius: 4px;
+    height: 20px;
+    overflow: hidden;
+}
+
+.progress-bar {
+    width: 0%; /* Initial width */
+    height: 100%;
+    background-color: #007aff; /* Apple blue */
+    transition: width 0.3s ease-in-out;
 }
