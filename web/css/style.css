@@ -16,7 +16,7 @@ header {
     background-color: #fff; /* White background for header */
     padding: 1rem 2rem;
     border-bottom: 1px solid #d2d2d7; /* Light border */
-    text-align: center;
+    /* text-align: center; */ /* Removed for left alignment */
     box-shadow: 0 2px 4px rgba(0,0,0,0.05); /* Slightly enhanced shadow */
     position: sticky; /* Make header sticky */
     top: 0;
@@ -27,6 +27,15 @@ header h1 {
     font-size: 1.75rem;
     font-weight: 600; /* Semi-bold like Apple titles */
     color: #1d1d1f;
+    display: flex; /* Added for icon alignment */
+    align-items: center; /* Added for icon alignment */
+}
+
+header h1 svg {
+    width: 28px; /* Slightly larger than default h1 font size */
+    height: 28px;
+    margin-right: 10px; /* Space between icon and text */
+    fill: currentColor; /* Inherit color from h1 */
 }
 
 main {
