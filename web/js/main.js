@@ -166,6 +166,7 @@ document.addEventListener('DOMContentLoaded', () => {
             //     const rect = thumbnail.getBoundingClientRect();
             //     return {x: rect.left, y: rect.top + pageYScroll, w: rect.width};
             // }
+            initialZoomLevel: 'fit', // Ensure images fit within the viewport, maintaining aspect ratio
         });
 
         // Add caption using PhotoSwipe's caption plugin (optional, requires more setup or using title attribute)
