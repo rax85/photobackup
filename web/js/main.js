@@ -315,7 +315,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 formData.append('file', file, file.name); // 'file' is a common field name, server must expect this
 
                 try {
-                    const response = await fetch('/put', { // Endpoint as per user requirement
+                    // Corrected endpoint: /image/filename
+                    const response = await fetch(`/image/${encodeURIComponent(file.name)}`, {
                         method: 'PUT',
                         body: formData,
                         // Headers like 'Content-Type': 'multipart/form-data' are usually set automatically by fetch for FormData
