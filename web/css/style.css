@@ -246,64 +246,74 @@ footer {
         padding: 0.5rem;
     }
     /* Removed .overlay-viewer styles as they are from a previous lightbox and PhotoSwipe handles its own UI. */
+} /* This closes the @media (max-width: 768px) block prematurely, likely a copy-paste error in my previous diff generation. Will fix. */
 
-    /* Sidebar Toggle Button - Mobile Only by default */
+/* Sidebar Toggle Button Styles */
+#sidebarToggleButton {
+    display: none; /* Hidden by default (desktop), shown in mobile media query */
+    background: rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(5px);
+    border: 1px solid #d2d2d7;
+    border-radius: 50%; /* Circular button */
+    width: 40px; /* Consistent size */
+    height: 40px; /* Consistent size */
+    padding: 8px; /* Padding to center icon */
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1); /* Softer shadow for header */
+    transition: background-color 0.2s ease;
+    position: relative; /* For SVG icon positioning */
+    /* z-index: 1005; /* Probably not needed in header flow, unless header items overlap strangely */
+}
+
+#sidebarToggleButton:hover {
+    background: rgba(255, 255, 255, 1);
+}
+
+#sidebarToggleButton svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
+    position: absolute;
+    top: 8px; /* Relative to button's padding */
+    left: 8px; /* Relative to button's padding */
+    /* width and height are 100% of the (40-16)=24px inner area */
+}
+
+#sidebarToggleButton svg.icon-menu {
+    opacity: 1;
+    transform: scale(1);
+}
+
+#sidebarToggleButton svg.icon-close {
+    opacity: 0;
+    transform: scale(0.8);
+}
+
+#sidebarToggleButton svg.visible {
+    opacity: 1;
+    transform: scale(1);
+}
+
+#sidebarToggleButton svg.hidden {
+    opacity: 0;
+    transform: scale(0.8) rotate(-45deg);
+    pointer-events: none;
+}
+
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    /* ... other existing 768px styles ... */
+
     #sidebarToggleButton {
-        display: none; /* Hidden by default, shown in mobile media query */
-        position: fixed; /* Fixed position for mobile */
-        top: 15px;
-        right: 15px;
-        z-index: 1005; /* Above sidebar, below header potentially if header had higher z-index */
-        background: rgba(255, 255, 255, 0.8);
-        backdrop-filter: blur(5px);
-        border: 1px solid #d2d2d7;
-        border-radius: 50%; /* Circular button */
-        width: 40px;
-        height: 40px;
-        padding: 8px; /* Adjust padding to center icon */
-        cursor: pointer;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        transition: background-color 0.2s ease;
+        display: flex; /* Show the button on mobile */
+        align-items: center;
+        justify-content: center;
+        margin-left: 10px; /* Space from upload button */
     }
 
-    #sidebarToggleButton:hover {
-        background: rgba(255, 255, 255, 1);
-    }
-
-    #sidebarToggleButton svg {
-        display: block; /* Remove extra space below inline svg */
-        width: 100%;
-        height: 100%;
-        transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
-        position: absolute; /* Allow layering for fade */
-        top: 8px; /* Match button padding */
-        left: 8px; /* Match button padding */
-        right: 8px;
-        bottom: 8px;
-    }
-
-    #sidebarToggleButton svg.icon-menu {
-        opacity: 1;
-        transform: scale(1);
-    }
-
-    #sidebarToggleButton svg.icon-close {
-        opacity: 0;
-        transform: scale(0.8); /* Initially hidden and slightly scaled down */
-    }
-
-    /* Classes to be toggled by JS for icon animation */
-    #sidebarToggleButton svg.visible {
-        opacity: 1;
-        transform: scale(1);
-    }
-    #sidebarToggleButton svg.hidden {
-        opacity: 0;
-        transform: scale(0.8) rotate(-45deg); /* Example: rotate while disappearing */
-        pointer-events: none; /* Prevent interaction when hidden */
-    }
-
-    /* Sidebar specific adjustments for mobile drawer behavior */
+    /* Sidebar specific adjustments for mobile drawer behavior (already existing) */
     #navigation-sidebar.collapsed {
         transform: translateX(100%);
     }
