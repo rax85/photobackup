@@ -51,6 +51,7 @@ main {
     display: flex;
     flex-direction: row; /* Default, but explicit */
     gap: 1rem; /* Space between gallery and sidebar */
+    position: relative; /* For positioning the button if it were inside here */
 }
 
 #gallery-grid { /* This is now the main content area for photos */
@@ -183,18 +184,56 @@ footer {
     }
 
     #gallery-container {
-        flex-direction: column; /* Stack gallery and sidebar */
+        /* flex-direction: column; /* REMOVED - Sidebar is now a drawer */
+    }
+
+    #sidebarToggleButton {
+        display: flex; /* Show the button on mobile */
+        align-items: center;
+        justify-content: center;
     }
 
     #navigation-sidebar {
-        width: 100%; /* Full width when stacked */
-        position: static; /* Override sticky positioning */
-        margin-bottom: 1rem; /* Space below sidebar when stacked on top */
-        height: auto; /* Adjust height as needed */
-        /* Consider making the ul scrollable if too many items for small screens */
-        max-height: 200px; /* Example max height */
-        overflow-y: auto; /* Allow scrolling for month links */
+        position: fixed; /* Fixed position for drawer behavior */
+        top: 0;
+        right: 0;
+        width: 250px; /* Drawer width */
+        height: 100vh; /* Full viewport height */
+        background-color: #fff; /* Sidebar background */
+        border-left: 1px solid #d2d2d7;
+        box-shadow: -2px 0 5px rgba(0,0,0,0.1);
+        padding: 1rem;
+        padding-top: 60px; /* Space for a close button or header */
+        overflow-y: auto; /* Scrollable content */
+        z-index: 1000; /* Ensure it's above gallery content but potentially below fixed header */
+        transform: translateX(100%); /* Initially off-screen to the right */
+        transition: transform 0.3s ease-in-out; /* Smooth transition */
+
+        /* Override desktop sticky behavior */
+        align-self: initial;
     }
+
+    #navigation-sidebar.expanded {
+        transform: translateX(0); /* Slide in */
+    }
+
+    /* Make gallery grid take full width when sidebar is a drawer */
+    #gallery-grid {
+        width: 100%;
+    }
+
+    /* Optional: Add an overlay for the rest of the page when sidebar is open */
+    body.sidebar-open-overlay::before {
+        content: "";
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0,0,0,0.5);
+        z-index: 999; /* Below sidebar, above content */
+    }
+
 
     .photo-items-grid { /* Responsive adjustments for the photo item grids */
         grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -207,6 +246,67 @@ footer {
         padding: 0.5rem;
     }
     /* Removed .overlay-viewer styles as they are from a previous lightbox and PhotoSwipe handles its own UI. */
+
+    /* Sidebar Toggle Button - Mobile Only by default */
+    #sidebarToggleButton {
+        display: none; /* Hidden by default, shown in mobile media query */
+        position: fixed; /* Fixed position for mobile */
+        top: 15px;
+        right: 15px;
+        z-index: 1005; /* Above sidebar, below header potentially if header had higher z-index */
+        background: rgba(255, 255, 255, 0.8);
+        backdrop-filter: blur(5px);
+        border: 1px solid #d2d2d7;
+        border-radius: 50%; /* Circular button */
+        width: 40px;
+        height: 40px;
+        padding: 8px; /* Adjust padding to center icon */
+        cursor: pointer;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        transition: background-color 0.2s ease;
+    }
+
+    #sidebarToggleButton:hover {
+        background: rgba(255, 255, 255, 1);
+    }
+
+    #sidebarToggleButton svg {
+        display: block; /* Remove extra space below inline svg */
+        width: 100%;
+        height: 100%;
+        transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
+        position: absolute; /* Allow layering for fade */
+        top: 8px; /* Match button padding */
+        left: 8px; /* Match button padding */
+        right: 8px;
+        bottom: 8px;
+    }
+
+    #sidebarToggleButton svg.icon-menu {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    #sidebarToggleButton svg.icon-close {
+        opacity: 0;
+        transform: scale(0.8); /* Initially hidden and slightly scaled down */
+    }
+
+    /* Classes to be toggled by JS for icon animation */
+    #sidebarToggleButton svg.visible {
+        opacity: 1;
+        transform: scale(1);
+    }
+    #sidebarToggleButton svg.hidden {
+        opacity: 0;
+        transform: scale(0.8) rotate(-45deg); /* Example: rotate while disappearing */
+        pointer-events: none; /* Prevent interaction when hidden */
+    }
+
+    /* Sidebar specific adjustments for mobile drawer behavior */
+    #navigation-sidebar.collapsed {
+        transform: translateX(100%);
+    }
 }
 
 @media (max-width: 480px) {
@@ -216,9 +316,11 @@ footer {
      .gallery-item img {
         height: 100px;
     }
+    /* #navigation-sidebar adjustment for very small screens if needed, but primarily handled by 768px query now
     #navigation-sidebar {
-        max-height: 150px; /* Further reduce height on very small screens */
+        max-height: 150px;
     }
+    */
     header {
         padding: 0.8rem 1rem; /* Adjust header padding for smaller screens */
     }
