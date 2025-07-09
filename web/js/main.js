@@ -246,10 +246,22 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error("Navigation sidebar element not found.");
             return;
         }
-        sidebar.innerHTML = ''; // Clear previous links
+
+        // Remove only the dynamic parts: the list of links (ul) and the "no dates" message (p)
+        const existingNavList = sidebar.querySelector('ul');
+        if (existingNavList) {
+            existingNavList.remove();
+        }
+        const existingNoDatesMessage = sidebar.querySelector('p.no-dates-message'); // Add a class to target it
+        if (existingNoDatesMessage) {
+            existingNoDatesMessage.remove();
+        }
 
         if (!groupedMedia || groupedMedia.size === 0) {
-            sidebar.innerHTML = '<p>No dates to navigate.</p>'; // Or just leave it empty
+            const noDatesMessage = document.createElement('p');
+            noDatesMessage.className = 'no-dates-message'; // Add class for specific removal
+            noDatesMessage.textContent = 'No dates to navigate.';
+            sidebar.appendChild(noDatesMessage);
             return;
         }
 
