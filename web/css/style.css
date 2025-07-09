@@ -251,33 +251,33 @@ footer {
 /* Sidebar Toggle Button Styles */
 #sidebarToggleButton {
     display: none; /* Hidden by default (desktop), shown in mobile media query */
-    background: rgba(255, 255, 255, 0.8);
-    backdrop-filter: blur(5px);
-    border: 1px solid #d2d2d7;
-    border-radius: 50%; /* Circular button */
-    width: 40px; /* Consistent size */
-    height: 40px; /* Consistent size */
-    padding: 8px; /* Padding to center icon */
+    background: transparent; /* Remove circle background */
+    border: none; /* Remove circle border */
+    backdrop-filter: none; /* Remove blur effect */
+    box-shadow: none; /* Remove shadow */
+    border-radius: 4px; /* Optional: slight rounding for hover, or remove if not needed */
+    width: 32px; /* Adjust size to be closer to icon */
+    height: 32px; /* Adjust size to be closer to icon */
+    padding: 4px; /* Icon is 24px, so 4px padding makes (32-8)=24px space */
     cursor: pointer;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1); /* Softer shadow for header */
-    transition: background-color 0.2s ease;
+    transition: background-color 0.2s ease; /* Keep hover transition */
     position: relative; /* For SVG icon positioning */
-    /* z-index: 1005; /* Probably not needed in header flow, unless header items overlap strangely */
+    color: #333; /* Set a color for the icon stroke if needed, or inherit */
 }
 
 #sidebarToggleButton:hover {
-    background: rgba(255, 255, 255, 1);
+    background: rgba(0, 0, 0, 0.1); /* Subtle hover effect */
 }
 
 #sidebarToggleButton svg {
     display: block;
-    width: 100%;
-    height: 100%;
+    width: 100%; /* SVG takes full space of padding box (24px) */
+    height: 100%; /* SVG takes full space of padding box (24px) */
     transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
     position: absolute;
-    top: 8px; /* Relative to button's padding */
-    left: 8px; /* Relative to button's padding */
-    /* width and height are 100% of the (40-16)=24px inner area */
+    top: 4px; /* Corresponds to new padding */
+    left: 4px; /* Corresponds to new padding */
+    stroke: currentColor; /* Make SVG stroke use the button's color attribute */
 }
 
 #sidebarToggleButton svg.icon-menu {
@@ -310,14 +310,45 @@ footer {
         display: flex; /* Show the button on mobile */
         align-items: center;
         justify-content: center;
-        margin-left: 10px; /* Space from upload button */
+        margin-left: 6px; /* Reduced space from upload button */
     }
 
     /* Sidebar specific adjustments for mobile drawer behavior (already existing) */
     #navigation-sidebar.collapsed {
         transform: translateX(100%);
     }
+
+    #navigation-sidebar.expanded .close-drawer-btn { /* Only show when drawer is open on mobile */
+        display: block;
+    }
 }
+
+/* Close button for the drawer itself */
+.close-drawer-btn {
+    display: none; /* Hidden by default (desktop), shown by mobile media query when expanded */
+    position: absolute;
+    top: 15px; /* Positioned within the top area of the sidebar drawer */
+    right: 15px;
+    background: transparent;
+    border: none;
+    width: 32px;
+    height: 32px;
+    padding: 4px; /* For a 24px icon */
+    cursor: pointer;
+    color: #555; /* Icon color, consistent with sidebar links */
+    z-index: 10; /* Ensure it's above nav links if they somehow overlap */
+}
+
+.close-drawer-btn:hover {
+    background: rgba(0, 0, 0, 0.05); /* Subtle hover */
+}
+
+.close-drawer-btn svg {
+    width: 100%;
+    height: 100%;
+    stroke: currentColor;
+}
+
 
 @media (max-width: 480px) {
     .photo-items-grid { /* Further responsive adjustments for photo item grids */

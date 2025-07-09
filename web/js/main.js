@@ -289,6 +289,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const navigationSidebar = document.getElementById('navigation-sidebar');
     const iconMenu = sidebarToggleButton ? sidebarToggleButton.querySelector('.icon-menu') : null;
     const iconClose = sidebarToggleButton ? sidebarToggleButton.querySelector('.icon-close') : null;
+    const closeDrawerButton = document.getElementById('closeDrawerButton');
     // const body = document.body; // For overlay class
 
     function updateSidebarStateForScreenSize() {
@@ -379,8 +380,27 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
+        if (closeDrawerButton) {
+            closeDrawerButton.addEventListener('click', () => {
+                if (navigationSidebar.classList.contains('expanded')) {
+                    navigationSidebar.classList.remove('expanded');
+                    sidebarToggleButton.setAttribute('aria-expanded', 'false');
+                    // body.classList.remove('sidebar-open-overlay'); // if overlay was used
+                    if (iconMenu && iconClose) {
+                        iconMenu.classList.add('visible');
+                        iconMenu.classList.remove('hidden');
+                        iconClose.classList.add('hidden');
+                        iconClose.classList.remove('visible');
+                    }
+                }
+            });
+        }
+
     } else {
         console.warn('Sidebar toggle button or navigation sidebar not found. Sidebar functionality disabled.');
+        if (!iconMenu || !iconClose) {
+            console.warn('Sidebar toggle icons not found.');
+        }
     }
 
 
