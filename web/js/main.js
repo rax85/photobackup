@@ -169,46 +169,13 @@ document.addEventListener('DOMContentLoaded', () => {
             initialZoomLevel: 'fit', // Ensure images fit within the viewport, maintaining aspect ratio
         });
 
-        // Add caption using PhotoSwipe's caption plugin (optional, requires more setup or using title attribute)
-        // For simplicity, PhotoSwipe can use the 'alt' attribute of the <img> or a more complex setup.
-        // The default behavior might be sufficient if 'alt' is descriptive.
-        // Or, using a dynamic data source to provide titles explicitly.
-
-        // Example for adding titles dynamically if needed, though might be complex
-        // This would require using the dataSource option or PhotoSwipe's API
-        lightbox.on('uiRegister', () => {
-            lightbox.pswp.ui.registerElement({
-                name: 'custom-caption',
-                order: 9,
-                isButton: false,
-                appendTo: 'root',
-                html: 'Caption text',
-                onInit: (el, pswp) => {
-                    pswp.on('change', () => {
-                        const currSlideElement = pswp.currSlide.data.element;
-                        let captionHTML = '';
-                        if (currSlideElement) {
-                            // Find the corresponding media item to get the filename
-                            // This assumes your slides are <a> elements and you can trace back
-                            const imgElement = currSlideElement.querySelector('img');
-                            if (imgElement) {
-                                captionHTML = imgElement.alt || '';
-                            }
-                        }
-                        // el.innerHTML = captionHTML || ''; // This is a simple example
-                        // A more robust way is to use PhotoSwipe's built-in caption elements
-                        // or provide data.title in the dataSource
-                        const item = mediaItems[pswp.currIndex];
-                        if (item && item.filename) {
-                           // This is a placeholder for how you might update a custom caption element.
-                           // PhotoSwipe's own caption handling is preferred.
-                           // For PhotoSwipe's built-in caption, ensure 'alt' on thumbnail or 'title' in dataSource.
-                        }
-                    });
-                }
-            });
-        });
-
+        // The 'custom-caption' element that displayed "Caption text" has been removed.
+        // PhotoSwipe can display captions if the 'alt' attribute of the thumbnail image (<img>)
+        // is populated, or if a 'title' is provided in a dataSource.
+        // The current code sets img.alt = item.filename || 'Media thumbnail';
+        // which PhotoSwipe might use by default if its caption module is active.
+        // If captions are desired, ensure item.filename is suitable or explore
+        // PhotoSwipe's dedicated caption options further.
 
         lightbox.init();
         console.log("PhotoSwipe Lightbox initialized:", lightbox); // Basic check 1
