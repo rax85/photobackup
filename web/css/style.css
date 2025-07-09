@@ -368,40 +368,53 @@ footer {
     header h1 {
         font-size: 1.3rem; /* Adjust title font size */
     }
+    /* .upload-btn specific mobile styles might be removed or adjusted if FAB overrides them */
+    /*
     .upload-btn {
-        padding: 0.4rem 0.6rem; /* Adjust button padding */
+        padding: 0.4rem 0.6rem;
     }
     .upload-btn svg {
-        width: 20px; /* Adjust icon size */
+        width: 20px;
         height: 20px;
     }
+    */
 }
 
-/* Upload Button Styles */
+/* Upload Button FAB Styles */
 .upload-btn {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 56px;
+    height: 56px;
     background-color: #007aff; /* Apple blue */
     color: white;
     border: none;
-    padding: 0.5rem 1rem;
-    border-radius: 5px;
+    border-radius: 50%; /* Circular */
+    padding: 16px; /* (56 - 24) / 2 for 24px icon */
     cursor: pointer;
-    transition: background-color 0.2s ease-in-out, transform 0.1s ease-in-out;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2), 0 2px 4px rgba(0,0,0,0.15); /* Prominent shadow */
+    transition: background-color 0.2s ease-in-out, transform 0.1s ease-in-out, box-shadow 0.2s ease;
     display: flex;
     align-items: center;
     justify-content: center;
+    z-index: 1050; /* Above most other content */
 }
 
 .upload-btn:hover {
     background-color: #005ecb; /* Darker blue on hover */
+    box-shadow: 0 6px 16px rgba(0,0,0,0.25), 0 3px 6px rgba(0,0,0,0.2);
 }
 
 .upload-btn:active {
     background-color: #004a9e; /* Even darker blue on active/click */
-    transform: scale(0.98); /* Slight press effect */
+    transform: scale(0.95); /* Slightly more pronounced press effect for FAB */
 }
 
 .upload-btn svg {
     fill: currentColor; /* Inherit color from button text (white) */
+    width: 24px; /* Ensure SVG is 24px */
+    height: 24px; /* Ensure SVG is 24px */
 }
 
 /* Upload Progress Overlay Styles */
