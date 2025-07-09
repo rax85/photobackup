@@ -246,10 +246,22 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error("Navigation sidebar element not found.");
             return;
         }
-        sidebar.innerHTML = ''; // Clear previous links
+
+        // Remove only the dynamic parts: the list of links (ul) and the "no dates" message (p)
+        const existingNavList = sidebar.querySelector('ul');
+        if (existingNavList) {
+            existingNavList.remove();
+        }
+        const existingNoDatesMessage = sidebar.querySelector('p.no-dates-message'); // Add a class to target it
+        if (existingNoDatesMessage) {
+            existingNoDatesMessage.remove();
+        }
 
         if (!groupedMedia || groupedMedia.size === 0) {
-            sidebar.innerHTML = '<p>No dates to navigate.</p>'; // Or just leave it empty
+            const noDatesMessage = document.createElement('p');
+            noDatesMessage.className = 'no-dates-message'; // Add class for specific removal
+            noDatesMessage.textContent = 'No dates to navigate.';
+            sidebar.appendChild(noDatesMessage);
             return;
         }
 
@@ -283,6 +295,126 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial fetch
     fetchMediaList();
+
+    // Sidebar Toggle Functionality
+    const sidebarToggleButton = document.getElementById('sidebarToggleButton');
+    const navigationSidebar = document.getElementById('navigation-sidebar');
+    const iconMenu = sidebarToggleButton ? sidebarToggleButton.querySelector('.icon-menu') : null;
+    const iconClose = sidebarToggleButton ? sidebarToggleButton.querySelector('.icon-close') : null;
+    const closeDrawerButton = document.getElementById('closeDrawerButton');
+    // const body = document.body; // For overlay class
+
+    function updateSidebarStateForScreenSize() {
+        const isDesktop = window.innerWidth >= 768;
+
+        if (isDesktop) {
+            // Desktop: Ensure sidebar is visible (remove 'expanded' class, CSS handles desktop layout)
+            // and button is correctly not managing it.
+            if (navigationSidebar) {
+                navigationSidebar.classList.remove('expanded'); // Should rely on default desktop styles
+            }
+            if (sidebarToggleButton) {
+                 sidebarToggleButton.setAttribute('aria-expanded', 'true'); // Or 'false' if sidebar is considered 'closed' by default on desktop too
+                 // Icon state for desktop if button were visible (it's hidden by CSS)
+                 // if (iconMenu) iconMenu.style.display = 'none';
+                 // if (iconClose) iconClose.style.display = 'block';
+            }
+            // if (body) body.classList.remove('sidebar-open-overlay');
+        } else {
+            // Mobile: Ensure sidebar is collapsed by default, button shows "open"
+            // The 'expanded' class is what shows it. So, it should not be present initially.
+            if (navigationSidebar && !navigationSidebar.classList.contains('expanded')) { // only adjust if not already expanded by user
+                if (sidebarToggleButton) sidebarToggleButton.setAttribute('aria-expanded', 'false');
+                if (iconMenu) {
+                    iconMenu.classList.add('visible');
+                    iconMenu.classList.remove('hidden');
+                }
+                if (iconClose) {
+                    iconClose.classList.add('hidden');
+                    iconClose.classList.remove('visible');
+                }
+            } else if (navigationSidebar && navigationSidebar.classList.contains('expanded')) {
+                // If mobile and sidebar is expanded (e.g. user action, then resize)
+                // Ensure icons reflect the expanded state
+                if (sidebarToggleButton) sidebarToggleButton.setAttribute('aria-expanded', 'true');
+                if (iconMenu) {
+                    iconMenu.classList.add('hidden');
+                    iconMenu.classList.remove('visible');
+                }
+                if (iconClose) {
+                    iconClose.classList.add('visible');
+                    iconClose.classList.remove('hidden');
+                }
+                // Or, force close:
+                // navigationSidebar.classList.remove('expanded');
+                // sidebarToggleButton.setAttribute('aria-expanded', 'false');
+                // iconMenu.style.display = 'block';
+                // iconClose.style.display = 'none';
+            }
+        }
+    }
+
+    if (sidebarToggleButton && navigationSidebar && iconMenu && iconClose) {
+        sidebarToggleButton.addEventListener('click', () => {
+            const isExpanded = navigationSidebar.classList.toggle('expanded');
+            sidebarToggleButton.setAttribute('aria-expanded', String(isExpanded));
+            // body.classList.toggle('sidebar-open-overlay', isExpanded);
+
+            if (isExpanded) {
+                iconMenu.classList.add('hidden');
+                iconMenu.classList.remove('visible');
+                iconClose.classList.add('visible');
+                iconClose.classList.remove('hidden');
+            } else {
+                iconMenu.classList.add('visible');
+                iconMenu.classList.remove('hidden');
+                iconClose.classList.add('hidden');
+                iconClose.classList.remove('visible');
+            }
+        });
+
+        // Initial state based on screen size
+        updateSidebarStateForScreenSize(); // Call on load
+
+        // Update on resize
+        window.addEventListener('resize', updateSidebarStateForScreenSize);
+
+        // Close sidebar when a navigation link is clicked (on mobile)
+        navigationSidebar.addEventListener('click', (event) => {
+            if (window.innerWidth < 768 && event.target.tagName === 'A') {
+                navigationSidebar.classList.remove('expanded');
+                sidebarToggleButton.setAttribute('aria-expanded', 'false');
+                // body.classList.remove('sidebar-open-overlay');
+                iconMenu.classList.add('visible');
+                iconMenu.classList.remove('hidden');
+                iconClose.classList.add('hidden');
+                iconClose.classList.remove('visible');
+            }
+        });
+
+        if (closeDrawerButton) {
+            closeDrawerButton.addEventListener('click', () => {
+                if (navigationSidebar.classList.contains('expanded')) {
+                    navigationSidebar.classList.remove('expanded');
+                    sidebarToggleButton.setAttribute('aria-expanded', 'false');
+                    // body.classList.remove('sidebar-open-overlay'); // if overlay was used
+                    if (iconMenu && iconClose) {
+                        iconMenu.classList.add('visible');
+                        iconMenu.classList.remove('hidden');
+                        iconClose.classList.add('hidden');
+                        iconClose.classList.remove('visible');
+                    }
+                }
+            });
+        }
+
+    } else {
+        console.warn('Sidebar toggle button or navigation sidebar not found. Sidebar functionality disabled.');
+        if (!iconMenu || !iconClose) {
+            console.warn('Sidebar toggle icons not found.');
+        }
+    }
+
 
     // Upload functionality
     const uploadButton = document.getElementById('uploadButton');

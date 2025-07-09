@@ -51,6 +51,7 @@ main {
     display: flex;
     flex-direction: row; /* Default, but explicit */
     gap: 1rem; /* Space between gallery and sidebar */
+    position: relative; /* For positioning the button if it were inside here */
 }
 
 #gallery-grid { /* This is now the main content area for photos */
@@ -183,18 +184,56 @@ footer {
     }
 
     #gallery-container {
-        flex-direction: column; /* Stack gallery and sidebar */
+        /* flex-direction: column; /* REMOVED - Sidebar is now a drawer */
+    }
+
+    #sidebarToggleButton {
+        display: flex; /* Show the button on mobile */
+        align-items: center;
+        justify-content: center;
     }
 
     #navigation-sidebar {
-        width: 100%; /* Full width when stacked */
-        position: static; /* Override sticky positioning */
-        margin-bottom: 1rem; /* Space below sidebar when stacked on top */
-        height: auto; /* Adjust height as needed */
-        /* Consider making the ul scrollable if too many items for small screens */
-        max-height: 200px; /* Example max height */
-        overflow-y: auto; /* Allow scrolling for month links */
+        position: fixed; /* Fixed position for drawer behavior */
+        top: 0;
+        right: 0;
+        width: 250px; /* Drawer width */
+        height: 100vh; /* Full viewport height */
+        background-color: #fff; /* Sidebar background */
+        border-left: 1px solid #d2d2d7;
+        box-shadow: -2px 0 5px rgba(0,0,0,0.1);
+        padding: 1rem;
+        padding-top: 60px; /* Space for a close button or header */
+        overflow-y: auto; /* Scrollable content */
+        z-index: 1000; /* Ensure it's above gallery content but potentially below fixed header */
+        transform: translateX(100%); /* Initially off-screen to the right */
+        transition: transform 0.3s ease-in-out; /* Smooth transition */
+
+        /* Override desktop sticky behavior */
+        align-self: initial;
     }
+
+    #navigation-sidebar.expanded {
+        transform: translateX(0); /* Slide in */
+    }
+
+    /* Make gallery grid take full width when sidebar is a drawer */
+    #gallery-grid {
+        width: 100%;
+    }
+
+    /* Optional: Add an overlay for the rest of the page when sidebar is open */
+    body.sidebar-open-overlay::before {
+        content: "";
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0,0,0,0.5);
+        z-index: 999; /* Below sidebar, above content */
+    }
+
 
     .photo-items-grid { /* Responsive adjustments for the photo item grids */
         grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -207,7 +246,109 @@ footer {
         padding: 0.5rem;
     }
     /* Removed .overlay-viewer styles as they are from a previous lightbox and PhotoSwipe handles its own UI. */
+} /* This closes the @media (max-width: 768px) block prematurely, likely a copy-paste error in my previous diff generation. Will fix. */
+
+/* Sidebar Toggle Button Styles */
+#sidebarToggleButton {
+    display: none; /* Hidden by default (desktop), shown in mobile media query */
+    background: transparent; /* Remove circle background */
+    border: none; /* Remove circle border */
+    backdrop-filter: none; /* Remove blur effect */
+    box-shadow: none; /* Remove shadow */
+    border-radius: 4px; /* Optional: slight rounding for hover, or remove if not needed */
+    width: 32px; /* Adjust size to be closer to icon */
+    height: 32px; /* Adjust size to be closer to icon */
+    padding: 4px; /* Icon is 24px, so 4px padding makes (32-8)=24px space */
+    cursor: pointer;
+    transition: background-color 0.2s ease; /* Keep hover transition */
+    position: relative; /* For SVG icon positioning */
+    color: #333; /* Set a color for the icon stroke if needed, or inherit */
 }
+
+#sidebarToggleButton:hover {
+    background: rgba(0, 0, 0, 0.1); /* Subtle hover effect */
+}
+
+#sidebarToggleButton svg {
+    display: block;
+    width: 100%; /* SVG takes full space of padding box (24px) */
+    height: 100%; /* SVG takes full space of padding box (24px) */
+    transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
+    position: absolute;
+    top: 4px; /* Corresponds to new padding */
+    left: 4px; /* Corresponds to new padding */
+    stroke: currentColor; /* Make SVG stroke use the button's color attribute */
+}
+
+#sidebarToggleButton svg.icon-menu {
+    opacity: 1;
+    transform: scale(1);
+}
+
+#sidebarToggleButton svg.icon-close {
+    opacity: 0;
+    transform: scale(0.8);
+}
+
+#sidebarToggleButton svg.visible {
+    opacity: 1;
+    transform: scale(1);
+}
+
+#sidebarToggleButton svg.hidden {
+    opacity: 0;
+    transform: scale(0.8) rotate(-45deg);
+    pointer-events: none;
+}
+
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    /* ... other existing 768px styles ... */
+
+    #sidebarToggleButton {
+        display: flex; /* Show the button on mobile */
+        align-items: center;
+        justify-content: center;
+        margin-left: 6px; /* Reduced space from upload button */
+    }
+
+    /* Sidebar specific adjustments for mobile drawer behavior (already existing) */
+    #navigation-sidebar.collapsed {
+        transform: translateX(100%);
+    }
+
+    #navigation-sidebar.expanded .close-drawer-btn { /* Only show when drawer is open on mobile */
+        display: block;
+    }
+}
+
+/* Close button for the drawer itself */
+.close-drawer-btn {
+    display: none; /* Hidden by default (desktop), shown by mobile media query when expanded */
+    position: absolute;
+    top: 15px; /* Positioned within the top area of the sidebar drawer */
+    right: 15px;
+    background: transparent;
+    border: none;
+    width: 32px;
+    height: 32px;
+    padding: 4px; /* For a 24px icon */
+    cursor: pointer;
+    color: #555; /* Icon color, consistent with sidebar links */
+    z-index: 10; /* Ensure it's above nav links if they somehow overlap */
+}
+
+.close-drawer-btn:hover {
+    background: rgba(0, 0, 0, 0.05); /* Subtle hover */
+}
+
+.close-drawer-btn svg {
+    width: 100%;
+    height: 100%;
+    stroke: currentColor;
+}
+
 
 @media (max-width: 480px) {
     .photo-items-grid { /* Further responsive adjustments for photo item grids */
@@ -216,49 +357,64 @@ footer {
      .gallery-item img {
         height: 100px;
     }
+    /* #navigation-sidebar adjustment for very small screens if needed, but primarily handled by 768px query now
     #navigation-sidebar {
-        max-height: 150px; /* Further reduce height on very small screens */
+        max-height: 150px;
     }
+    */
     header {
         padding: 0.8rem 1rem; /* Adjust header padding for smaller screens */
     }
     header h1 {
         font-size: 1.3rem; /* Adjust title font size */
     }
+    /* .upload-btn specific mobile styles might be removed or adjusted if FAB overrides them */
+    /*
     .upload-btn {
-        padding: 0.4rem 0.6rem; /* Adjust button padding */
+        padding: 0.4rem 0.6rem;
     }
     .upload-btn svg {
-        width: 20px; /* Adjust icon size */
+        width: 20px;
         height: 20px;
     }
+    */
 }
 
-/* Upload Button Styles */
+/* Upload Button FAB Styles */
 .upload-btn {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 56px;
+    height: 56px;
     background-color: #007aff; /* Apple blue */
     color: white;
     border: none;
-    padding: 0.5rem 1rem;
-    border-radius: 5px;
+    border-radius: 50%; /* Circular */
+    padding: 16px; /* (56 - 24) / 2 for 24px icon */
     cursor: pointer;
-    transition: background-color 0.2s ease-in-out, transform 0.1s ease-in-out;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2), 0 2px 4px rgba(0,0,0,0.15); /* Prominent shadow */
+    transition: background-color 0.2s ease-in-out, transform 0.1s ease-in-out, box-shadow 0.2s ease;
     display: flex;
     align-items: center;
     justify-content: center;
+    z-index: 1050; /* Above most other content */
 }
 
 .upload-btn:hover {
     background-color: #005ecb; /* Darker blue on hover */
+    box-shadow: 0 6px 16px rgba(0,0,0,0.25), 0 3px 6px rgba(0,0,0,0.2);
 }
 
 .upload-btn:active {
     background-color: #004a9e; /* Even darker blue on active/click */
-    transform: scale(0.98); /* Slight press effect */
+    transform: scale(0.95); /* Slightly more pronounced press effect for FAB */
 }
 
 .upload-btn svg {
     fill: currentColor; /* Inherit color from button text (white) */
+    width: 24px; /* Ensure SVG is 24px */
+    height: 24px; /* Ensure SVG is 24px */
 }
 
 /* Upload Progress Overlay Styles */

@@ -2,109 +2,191 @@
 
 [![Python application](https://github.com/rax85/photobackup/actions/workflows/python-app.yml/badge.svg)](https://github.com/rax85/photobackup/actions/workflows/python-app.yml)
 
-A simple HTTP server that scans a specified directory for media files (images and videos)
-and provides a JSON list of these files along with their SHA256 hash and last modified time.
+A simple web-based media server application that scans a directory for images,
+provides an API to list and view them, and allows new image uploads. It features
+a responsive web interface for browsing and viewing media.
 
-## Installation
+## Features
+
+*   Scans a specified directory for media files (images).
+*   Generates thumbnails for images.
+*   Provides an HTTP API to list media and serve image files and thumbnails.
+*   Allows image uploads via the API.
+*   Responsive web frontend for browsing the media gallery.
+*   Background rescanning of the media directory (optional).
+
+## Setup and Running
+
+### Prerequisites
+*   Python 3.x
+*   pip
+
+### Installation
+
+1.  Clone the repository:
+    ```bash
+    git clone <repository-url>
+    cd <repository-directory>
+    ```
+2.  Install dependencies:
+    ```bash
+    pip install .
+    ```
+    For development, you might prefer:
+    ```bash
+    pip install -e .
+    # If you have development-specific requirements:
+    # pip install -r requirements-dev.txt
+    ```
+
+### Running the Server
+
+Execute the server script from the root of the project:
 
 ```bash
-pip install .
-# or for development
-pip install -e .
-pip install -r requirements-dev.txt # If you have dev specific requirements
+python media_server/server.py --storage_dir=/path/to/your/media --port=8000 [--rescan_interval=300]
 ```
 
-## Usage
+**Command-line arguments:**
 
-Run the server using the following command:
+*   `--storage_dir`: (Required) The directory containing media files to scan.
+*   `--port`: (Optional) The port number for the server to listen on. Defaults to `8000`.
+*   `--rescan_interval`: (Optional) Interval in seconds for automatically rescanning the storage directory in the background. If `0` or not provided, background rescanning is disabled. For example, `--rescan_interval 300` will rescan every 5 minutes.
 
-```bash
-media-server --storage_dir /path/to/your/media --port 8080 --rescan_interval 300
-```
+Once the server is running, you can access the web interface by navigating to `http://localhost:<port>` in your web browser (e.g., `http://localhost:8000`).
 
--   `--storage_dir`: (Required) The directory containing media files to scan.
--   `--port`: (Optional) The port number for the server to listen on. Defaults to 8000.
--   `--rescan_interval`: (Optional) Interval in seconds for automatically rescanning the storage directory in the background. If 0 or not provided, background rescanning is disabled. For example, `--rescan_interval 300` will rescan every 5 minutes.
+## API Specification
 
-### API Endpoints
+The server exposes the following HTTP API endpoints:
 
--   **GET /list**: Returns a JSON object mapping the SHA256 hash of each media file
-    to its details. These details include:
-    -   `filename`: The name of the file.
-    -   `last_modified`: The last modification timestamp of the file (from the filesystem).
-    -   `file_path`: The full path to the file.
-    -   `original_creation_date`: The original creation timestamp of the media. For images, this is extracted from the EXIF 'DateTimeOriginal' tag if available. If EXIF data is not present or for other media types, this defaults to the file's creation time on the filesystem (ctime).
+### `GET /`
+*   **Description:** Serves the main web application (`index.html`).
+*   **Request:** None.
+*   **Success Response:**
+    *   `200 OK`
+    *   Body: HTML content of the web application.
 
-Example response:
-```json
-{
-  "sha256_hash_1": {
-    "filename": "image.jpg",
-    "last_modified": 1678886400.0,
-    "file_path": "/path/to/your/media/image.jpg",
-    "original_creation_date": 1678880000.0
-  },
-  "sha256_hash_2": {
-    "filename": "video.mp4",
-    "last_modified": 1678886401.0,
-    "file_path": "/path/to/your/media/subdir/video.mp4",
-    "original_creation_date": 1678885000.0
-  }
-}
-```
-**Note:** The `"file_path"` and `"original_creation_date"` fields are included in the response objects. The `original_creation_date` will be derived from EXIF for images where possible.
+### `GET /list`
+*   **Description:** Retrieves metadata for all media items currently in the server's cache.
+*   **Request:** None.
+*   **Success Response:**
+    *   `200 OK`
+    *   Body (JSON): An object where keys are SHA256 hashes of media items, and values are objects containing their metadata.
+        ```json
+        {
+          "sha256_hash_1": {
+            "filename": "image.jpg",
+            "original_filename": "original_image_name.jpg",
+            "file_path": "relative/path/to/image.jpg", // Relative to storage_dir
+            "last_modified": 1678886400.0, // Unix timestamp of last file modification
+            "original_creation_date": 1678880000.0, // Unix timestamp (from EXIF or file system ctime)
+            "thumbnail_file": "ab/abcdef123.png", // Relative path within thumbnail_dir (e.g., .thumbnails/ab/hash.png)
+            "width": 1920, // Image width in pixels
+            "height": 1080 // Image height in pixels
+          }
+          // ... more items
+        }
+        ```
 
--   **GET /thumbnail/<sha256_hex>**: Returns the thumbnail image (PNG) for the
-    given SHA256 hash if it exists.
-    -   `<sha256_hex>`: The SHA256 hash of the original media file. Must be 64 hexadecimal characters.
-    -   **Success (200 OK)**: Returns the thumbnail image with `Content-Type: image/png`.
-    -   **Not Found (404 Not Found)**: Returned if the SHA256 hash is unknown, if the corresponding media file does not have a thumbnail (e.g., it's a video or thumbnail generation failed), or if the thumbnail directory is missing.
-    -   **Bad Request (400 Bad Request)**: Returned if the provided `<sha256_hex>` is not a valid SHA256 hash format.
-
--   **PUT /image/<filename>**
-    -   **Purpose**: Uploads a new image file.
-    -   **Method**: `PUT`
-    -   **URL Parameters**:
-        -   `<filename>`: The desired original filename for the uploaded image (e.g., `myphoto.jpg`). This will be sanitized and used as the base for the stored filename.
-    -   **Request Body**: `multipart/form-data` with a single file part named `file`.
-        -   Example using `curl`: `curl -X PUT -F "file=@/path/to/local/image.jpg" http://localhost:8000/image/image.jpg`
-    -   **Behavior**:
-        -   The server calculates the SHA256 hash of the uploaded image.
-        -   If an image with the same SHA256 hash already exists in the system, the operation is a no-op for storage, and details of the existing image are returned (Status 200).
-        -   If new content, the image is saved into a dated subdirectory within the `storage_dir` (e.g., `storage_dir/uploads/YYYYMMDD/`).
-        -   Filename collisions within the target directory are handled by appending a numeric suffix (e.g., `filename_1.jpg`).
-        -   A thumbnail is generated and stored in the `.thumbnails` directory, named by the image's SHA256 hash.
-        -   The media cache is updated with metadata for the new image.
-    -   **Success Response (201 Created)**:
+### `PUT /image/<path:filename>`
+*   **Description:** Uploads a new image file. The `<filename>` in the URL path is a suggestion for the stored filename (it will be sanitized).
+*   **Request:**
+    *   Method: `PUT`
+    *   Path Parameter: `<filename>` (e.g., `my_photo.jpg`)
+    *   Body: `multipart/form-data` with a single file part named `file`.
+        *   Example using `curl`: `curl -X PUT -F "file=@/path/to/local/image.jpg" http://localhost:8000/image/my_photo.jpg`
+*   **Success Response (201 Created - New image uploaded):**
+    *   `201 Created`
+    *   Body (JSON): Metadata of the successfully uploaded image.
         ```json
         {
           "message": "Image uploaded successfully.",
-          "sha256": "actual_sha256_hash_of_image",
-          "filename": "stored_filename.jpg", // Actual filename on disk (possibly suffixed)
+          "sha256": "sha256_hash_of_uploaded_image",
+          "filename": "stored_filename.jpg", // Actual filename on disk after sanitization/deduplication
           "file_path": "uploads/YYYYMMDD/stored_filename.jpg", // Relative to storage_dir
-          "thumbnail_file": "actual_sha256_hash_of_image.png"
+          "thumbnail_file": "ab/sha256_hash.png", // Relative path within thumbnail_dir
+          "width": 1920, // Width of the uploaded image
+          "height": 1080 // Height of the uploaded image
         }
         ```
-    -   **Success Response (200 OK - Content Exists)**:
+*   **Success Response (200 OK - Image content already exists):**
+    *   `200 OK`
+    *   Body (JSON): Metadata of the existing image if the uploaded content matches a known SHA256 hash.
         ```json
         {
           "message": "Image content already exists.",
-          "sha256": "existing_sha256_hash",
+          "sha256": "sha256_hash_of_existing_image",
           "filename": "existing_filename.jpg",
-          "file_path": "path/to/existing_file.jpg"
+          "file_path": "path/to/existing_filename.jpg"
+          // May also include width, height, thumbnail_file if available in cache for existing item
         }
         ```
-    -   **Error Responses**:
-        -   `400 Bad Request`: If no file part, no selected file, invalid file type (only 'png', 'jpg', 'jpeg', 'gif' allowed).
-        -   `500 Internal Server Error`: If there's an issue saving the file or server configuration error.
+*   **Error Responses:**
+    *   `400 Bad Request`: If no `file` part in request, no file selected, invalid file type (allowed: 'png', 'jpg', 'jpeg', 'gif'), or invalid file path. Response body is JSON: `{"error": "Error description"}`.
+    *   `500 Internal Server Error`: If there's an issue saving the file or a server configuration error. Response body is JSON: `{"error": "Error description"}`.
 
--   **GET /image/<sha256_hex>**
-    -   **Purpose**: Retrieves an image file based on its SHA256 hash.
-    -   **Method**: `GET`
-    -   **URL Parameters**:
-        -   `<sha256_hex>`: The SHA256 hash of the image to retrieve. Must be 64 hexadecimal characters.
-    -   **Success Response (200 OK)**: Returns the raw image file with the appropriate `Content-Type`.
-    -   **Error Responses**:
-        -   `400 Bad Request`: If the `<sha256_hex>` format is invalid.
-        -   `404 Not Found`: If no image with the given SHA256 hash is found in the cache, or if the cached file path does not exist on disk.
-        -   `500 Internal Server Error`: If there's a server configuration error or other unexpected issue.
+### `GET /image/<string:sha256_hex>`
+*   **Description:** Serves the original image file based on its SHA256 hash.
+*   **Request:**
+    *   Path Parameter: `<sha256_hex>` (64-character hexadecimal string).
+*   **Success Response:**
+    *   `200 OK`
+    *   Body: Binary image data with appropriate `Content-Type` (e.g., `image/jpeg`, `image/png`).
+*   **Error Responses:**
+    *   `400 Bad Request`: "Invalid SHA256 format." (JSON body with `{"error": "description"}`)
+    *   `404 Not Found`: If image SHA or corresponding file not found. (JSON body with `{"error": "description"}`)
+    *   `500 Internal Server Error`: Server configuration or metadata issues. (JSON body with `{"error": "description"}`)
+
+### `GET /image/sha256/<string:sha256_hex>`
+*   **Description:** Alias for `GET /image/<string:sha256_hex>`. Serves an image based on its SHA256 hash.
+*   **Details:** Same request, success, and error responses as `GET /image/<string:sha256_hex>`.
+
+### `GET /thumbnail/<string:sha256_hex>`
+*   **Description:** Serves a generated thumbnail (PNG format) for the image specified by its SHA256 hash.
+*   **Request:**
+    *   Path Parameter: `<sha256_hex>` (64-character hexadecimal string).
+*   **Success Response:**
+    *   `200 OK`
+    *   Body: PNG image data (`Content-Type: image/png`).
+*   **Error Responses:**
+    *   `400 Bad Request`: "Invalid SHA256 format." (JSON body with `{"error": "description"}`)
+    *   `404 Not Found`: If thumbnail not found (e.g., SHA unknown, original is not an image, or thumbnail generation failed). (JSON body with `{"error": "description"}`)
+    *   `500 Internal Server Error`: Server configuration issues (e.g., thumbnail directory not configured). (JSON body with `{"error": "description"}`)
+
+## Web Frontend
+
+The application includes a responsive web frontend for browsing and interacting with the media. It is served from the `web/` directory relative to the project root.
+
+**Key Files:**
+*   `web/index.html`: The main HTML file that structures the single-page application.
+*   `web/css/style.css`: Contains all custom styles for the application's appearance and layout.
+*   `web/js/main.js`: Core client-side JavaScript that handles API interactions, dynamic content rendering, and user interface logic.
+*   `web/photoswipe.css`, `web/js/photoswipe-lightbox.esm.js`, `web/js/photoswipe.esm.js`: Files for the PhotoSwipeJs image lightbox library.
+
+**Features:**
+
+*   **Gallery View:**
+    *   Displays media items as thumbnails in a responsive grid that adjusts to screen size.
+    *   Images are grouped chronologically by month and year of their original creation date, with clear visual dividers.
+    *   Thumbnail images are lazy-loaded to improve initial page load performance.
+*   **Image Lightbox:**
+    *   Utilizes PhotoSwipeJs to provide a rich, full-screen image viewing experience.
+    *   Supports touch gestures for navigation on mobile devices, keyboard controls on desktop, and pinch/scroll zooming.
+*   **Date Navigation:**
+    *   A dedicated navigation panel allows users to quickly jump to specific months/years within the gallery.
+    *   On desktop views, this panel is a sticky sidebar.
+    *   On mobile views, it transforms into a collapsible off-canvas drawer, accessible via a toggle button in the header. The drawer also includes its own close button.
+*   **Responsive Design:**
+    *   The entire interface is designed to be responsive, providing an optimal viewing experience on desktops, tablets, and mobile phones.
+*   **Image Upload:**
+    *   A Floating Action Button (FAB) is persistently displayed in the bottom-right corner, allowing users to easily initiate image uploads.
+    *   A modal dialog shows the progress of file uploads.
+    *   The gallery view automatically refreshes to include newly uploaded images upon successful completion.
+
+**Technologies Used (Frontend):**
+*   HTML5
+*   CSS3 (including Flexbox and Grid for layout)
+*   JavaScript (ES Modules)
+*   PhotoSwipeJs (for image lightbox)
+
+(Any other existing sections like License, Contributing, etc., would ideally be preserved if they were below the API section in the old README or if they are standard project sections)
