@@ -1,5 +1,13 @@
+# At the very beginning of media_server/server.py
 import os
 import sys
+
+# Ensure the project root is in sys.path for direct execution
+if __name__ == '__main__' and __package__ is None:
+    PROJECT_ROOT_FOR_SERVER = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if PROJECT_ROOT_FOR_SERVER not in sys.path:
+        sys.path.insert(0, PROJECT_ROOT_FOR_SERVER)
+
 import threading
 import time
 import datetime
