@@ -1,12 +1,21 @@
-import json
+# At the very beginning of media_server/server.py
 import os
 import sys
+
+# Ensure the project root is in sys.path for direct execution
+if __name__ == '__main__' and __package__ is None:
+    PROJECT_ROOT_FOR_SERVER = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if PROJECT_ROOT_FOR_SERVER not in sys.path:
+        sys.path.insert(0, PROJECT_ROOT_FOR_SERVER)
+
 import threading
 import time
 import datetime
 import hashlib
+import mimetypes # for guessing mime type of uploaded file
 from werkzeug.utils import secure_filename
-from flask import request # Added for file upload handling
+from werkzeug.exceptions import NotFound
+from flask import request, g as flask_g # Added g for db connection per request
 
 from absl import app as absl_app
 from absl import flags, logging
@@ -15,443 +24,392 @@ from flask import Flask, jsonify, abort, send_from_directory
 # Correctly import from the same package
 try:
     from . import media_scanner
+    from . import database as db_utils
 except ImportError:
-    import media_scanner # Fallback for direct execution
+    from media_server import media_scanner # Fallback for direct execution
+    from media_server import database as db_utils
+
 
 FLAGS = flags.FLAGS
 
-# Define flags if not already defined (e.g., when running tests that don't invoke main())
-# This is a bit of a workaround for absl's flag system.
+# Define flags if not already defined
 try:
     flags.DEFINE_string('storage_dir', None, 'Directory to scan for media files.')
     flags.DEFINE_integer('port', 8000, 'Port for the HTTP server.')
     flags.DEFINE_integer('rescan_interval', 0, 'Interval in seconds for background rescanning. 0 to disable.')
-    # Mark as required only if this script is the entry point,
-    # otherwise, tests or other modules might define/use them differently.
-    if __name__ == "__main__":
+    flags.DEFINE_string('db_name', db_utils.DATABASE_NAME, 'Name of the SQLite database file.')
+    if __name__ == "__main__": # Mark as required only if this script is the entry point
         flags.mark_flag_as_required('storage_dir')
 except flags.Error:
     pass # Flags are already defined
 
-# Global variable to store media data and a lock for thread-safe access
-MEDIA_DATA_CACHE = {}
-MEDIA_DATA_LOCK = threading.Lock()
 
 # Determine the absolute path to the project's root directory
-# Assuming server.py is in media_server/ and web/ is in the parent of media_server/
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 WEB_DIR_ABSOLUTE = os.path.join(PROJECT_ROOT, 'web')
 
-
-# Create Flask app instance, explicitly setting the static folder to our 'web' directory
-# and static_url_path to ensure files are served from the root (e.g. /css/style.css)
 app = Flask(__name__, static_folder=WEB_DIR_ABSOLUTE, static_url_path='')
 
+# --- Database Connection Handling ---
+def get_db():
+    """Opens a new database connection if there is none yet for the current application context."""
+    if not hasattr(flask_g, 'sqlite_db'):
+        db_path = app.config.get('DATABASE_PATH')
+        if not db_path:
+            # This should ideally not happen if app is configured correctly
+            logging.error("DATABASE_PATH not configured in Flask app.")
+            # Fallback to default path construction, though storage_dir might not be known here
+            # This part of get_db might need to be more robust if app.config isn't ready.
+            # For now, assume DATABASE_PATH is set during app initialization.
+            # A possible issue: if get_db() is called outside request context AND before app config is fully set.
+            # However, db_utils.get_db_connection itself can derive from storage_dir if given.
+            # The main Flask app setup will put the correct DB path into app.config['DATABASE_PATH']
+            # which db_utils.get_db_connection will use via flask_g.
+            # If this is called from background thread, flask_g won't be available.
+            # Background thread needs its own connection management.
+            # The db_utils.thread_local should handle this.
+            # This flask_g based one is for request threads.
+            flask_g.sqlite_db = db_utils.get_db_connection(db_utils.get_db_path(app.config.get('STORAGE_DIR')))
+        else:
+            flask_g.sqlite_db = db_utils.get_db_connection(db_path)
+    return flask_g.sqlite_db
 
-def reset_media_data_cache():
-    """Clears the global MEDIA_DATA_CACHE in a thread-safe manner."""
-    with MEDIA_DATA_LOCK:
-        MEDIA_DATA_CACHE.clear()
-        logging.debug("MEDIA_DATA_CACHE has been reset.")
+@app.teardown_appcontext
+def close_db(error):
+    """Closes the database again at the end of the request."""
+    if hasattr(flask_g, 'sqlite_db'):
+        db_utils.close_db_connection() # This uses thread_local.connection
+        delattr(flask_g, 'sqlite_db') # Remove from flask_g
 
-def background_scanner_task():
-    """Periodically rescans the storage directory and updates the cache."""
-    global MEDIA_DATA_CACHE
-    # Ensure app context is available if needed for config, though here we use FLAGS directly
-    # as it's initialized before this thread starts.
-    if not FLAGS.storage_dir or FLAGS.rescan_interval <= 0:
-        logging.error("Background scanner cannot start: storage_dir or rescan_interval not configured properly.")
-        return
+# --- Background Scanner ---
+def background_scanner_task(app_context):
+    """Periodically rescans the storage directory and updates the database."""
+    # Background thread needs to manage its own DB connection via db_utils.thread_local
+    # It doesn't use flask_g.
+    # The app_context is passed to allow the thread to configure logging or other app settings if needed
+    # but primarily for accessing app.config values like STORAGE_DIR and DATABASE_PATH.
 
-    logging.info(f"Background scanner started. Rescan interval: {FLAGS.rescan_interval} seconds for dir: {FLAGS.storage_dir}")
-    while True:
-        time.sleep(FLAGS.rescan_interval)
-        logging.info("Background scanner performing rescan...")
-        try:
-            with MEDIA_DATA_LOCK: # Acquire lock before modifying cache
-                updated_data = media_scanner.scan_directory(
-                    FLAGS.storage_dir, # Use FLAGS.storage_dir as app.config might not be set in this thread
-                    existing_data=MEDIA_DATA_CACHE,
-                    rescan=True
-                )
-                MEDIA_DATA_CACHE = updated_data
-            logging.info("Background rescan complete. Cache updated.")
-        except Exception as e:
-            logging.error(f"Error during background scan: {e}", exc_info=True)
+    # Wait a moment for the main server to potentially start up and log its messages.
+    time.sleep(5)
 
+    with app_context: # Use the app context for config access
+        storage_dir = app.config.get('STORAGE_DIR')
+        db_path = app.config.get('DATABASE_PATH') # Get the configured DB path
+        rescan_interval = app.config.get('RESCAN_INTERVAL')
+
+        if not storage_dir or not db_path or rescan_interval <= 0:
+            logging.error("Background scanner cannot start: storage_dir, db_path, or rescan_interval not configured properly.")
+            return
+
+        logging.info(f"Background scanner started. Rescan interval: {rescan_interval} seconds for dir: {storage_dir}, DB: {db_path}")
+        while True:
+            try:
+                # The db_utils.get_db_connection() called by media_scanner will use thread_local
+                # to get/create a connection for this background thread.
+                logging.info("Background scanner performing rescan...")
+                media_scanner.scan_directory(storage_dir, db_path, rescan=True)
+                logging.info("Background rescan complete.")
+            except Exception as e:
+                logging.error(f"Error during background scan: {e}", exc_info=True)
+            finally:
+                # Ensure connection for this thread is closed after each scan cycle
+                db_utils.close_db_connection()
+            time.sleep(rescan_interval)
+
+
+# --- Flask Routes ---
 @app.route('/')
 def root():
-    """Serves the main index.html page from the static folder."""
-    # Flask, when static_folder is set, can serve files using send_static_file.
-    # However, if static_url_path is '', it automatically tries to serve 'index.html'
-    # from the static_folder when '/' is requested.
-    # If not, or to be explicit:
-    # return app.send_static_file('index.html')
-    # For this setup, simply defining static_folder and static_url_path=''
-    # and having an index.html in that folder is usually enough.
-    # Let's be explicit to ensure it works as intended.
+    """Serves the main index.html page."""
     return app.send_static_file('index.html')
 
 @app.route('/list', methods=['GET'])
 def list_media():
-    """Handles GET requests for /list endpoint."""
-    with MEDIA_DATA_LOCK:
-        # Create a deep copy to avoid issues if the cache is updated while serializing/sending
-        data_to_send = {k: v.copy() for k, v in MEDIA_DATA_CACHE.items()}
-    logging.info(f"Served /list request")
-    return jsonify(data_to_send)
+    """Handles GET requests for /list endpoint, returns all media from DB."""
+    # get_db() will be called implicitly by db_utils if using flask_g,
+    # or db_utils manages its own thread_local connection.
+    # For request context, get_db() here ensures flask_g.sqlite_db is set.
+    # db_conn_for_request = get_db() # Establishes flask_g.sqlite_db if not present
 
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+    # db_utils functions now use app.config['DATABASE_PATH'] via their own get_db_path if flask_g not set,
+    # or directly use the connection from flask_g if set by get_db().
+    # The crucial part is that db_utils.get_db_connection gets the correct db_path.
+    all_media = db_utils.get_all_media_files(app.config['DATABASE_PATH'])
+    logging.info(f"Served /list request, found {len(all_media)} items.")
+    return jsonify(all_media)
+
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'heic', 'heif', 'mp4', 'mov', 'avi'}
 
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.route('/image/<path:filename>', methods=['PUT'])
-def put_image(filename):
-    """Handles PUT requests for /image/<filename> endpoint for image uploads."""
+def put_image(filename): # filename comes from the <path:filename> URL part
+    """Handles PUT requests for image uploads."""
     if 'file' not in request.files:
         abort(400, description="No file part in the request.")
 
-    file_from_request = request.files['file'] # Renamed to avoid conflict with 'file' module
-    original_filename_unsafe = file_from_request.filename
+    file_from_request = request.files['file']
+    original_client_filename = file_from_request.filename # Original name from client
 
-    if original_filename_unsafe == '':
+    if original_client_filename == '':
         abort(400, description="No selected file.")
 
-    if not file_from_request or not allowed_file(original_filename_unsafe):
-        abort(400, description=f"Invalid file type. Allowed types: {ALLOWED_EXTENSIONS}")
+    if not allowed_file(original_client_filename):
+        abort(400, description=f"Invalid file type for '{original_client_filename}'. Allowed: {ALLOWED_EXTENSIONS}")
 
-    # Use the filename from the URL path, but sanitize it.
-    s_filename = secure_filename(filename)
+    # Sanitize the filename from URL, or use sanitized client filename if URL one is bad
+    s_filename = secure_filename(filename) # Use the 'filename' arg from the route
     if not s_filename:
-        s_filename = secure_filename(original_filename_unsafe)
-        if not s_filename:
-             s_filename = "unnamed_image" + os.path.splitext(original_filename_unsafe)[1].lower()
-
+        s_filename = secure_filename(original_client_filename)
+        if not s_filename: # If both are bad, create a default
+             s_filename = "unnamed_upload" + os.path.splitext(original_client_filename)[1].lower()
 
     file_contents = file_from_request.read()
-    # file_from_request.seek(0) # Not strictly necessary if we don't read it again from the stream
-
     sha256_hash = hashlib.sha256(file_contents).hexdigest()
+    db_path = app.config['DATABASE_PATH']
 
-    with MEDIA_DATA_LOCK:
-        if sha256_hash in MEDIA_DATA_CACHE:
-            logging.info(f"Image with SHA256 {sha256_hash} (filename: {s_filename}) already exists. No-op.")
-            cached_entry = MEDIA_DATA_CACHE[sha256_hash]
-            return jsonify({
-                "message": "Image content already exists.",
-                "sha256": sha256_hash,
-                "filename": cached_entry.get('filename'),
-                "file_path": cached_entry.get('file_path')
-            }), 200
-
-        today_str = datetime.datetime.now().strftime('%Y%m%d')
-        upload_subdir_rel = os.path.join("uploads", today_str) # e.g. uploads/20231027
-        upload_dir_abs = os.path.join(app.config['STORAGE_DIR'], upload_subdir_rel)
-        os.makedirs(upload_dir_abs, exist_ok=True)
-
-        base, ext = os.path.splitext(s_filename)
-        ext = ext.lower() # Ensure consistent extension casing
-        if not ext: # if no extension from sanitized filename, try from original
-            ext = os.path.splitext(original_filename_unsafe)[1].lower()
-
-        counter = 0
-        # Ensure base is not empty after splitext if s_filename was like ".jpg"
-        if not base and ext:
-            base = "image"
-
-        final_filename_on_disk = f"{base}{ext}"
-        prospective_path_on_disk = os.path.join(upload_dir_abs, final_filename_on_disk)
-
-        while os.path.exists(prospective_path_on_disk):
-            counter += 1
-            final_filename_on_disk = f"{base}_{counter}{ext}"
-            prospective_path_on_disk = os.path.join(upload_dir_abs, final_filename_on_disk)
-
-        try:
-            with open(prospective_path_on_disk, "wb") as f_save:
-                f_save.write(file_contents)
-            logging.info(f"Saved new image: {final_filename_on_disk} to {upload_subdir_rel} (SHA256: {sha256_hash})")
-        except IOError as e:
-            logging.error(f"Failed to save file {final_filename_on_disk} to {upload_dir_abs}: {e}")
-            abort(500, description="Failed to save image.")
-
-        thumbnail_file_name_only = None # Initialize
-        thumbnail_dir_abs_path = app.config.get('THUMBNAIL_DIR')
-        if not thumbnail_dir_abs_path:
-            logging.error("Thumbnail directory not configured. Cannot generate thumbnail.")
-        else:
-            # Ensure thumbnail dir exists (media_scanner.scan_directory usually does this, but good practice here too)
-            os.makedirs(thumbnail_dir_abs_path, exist_ok=True)
-
-            thumbnail_path_generated = media_scanner.generate_thumbnail(
-                prospective_path_on_disk, # Full path to the newly saved source image
-                thumbnail_dir_abs_path,
-                sha256_hash
-            )
-            if thumbnail_path_generated:
-                # thumbnail_path_generated is now the relative path like "ab/hash.png"
-                thumbnail_file_name_only = thumbnail_path_generated
-            else:
-                logging.warning(f"Thumbnail generation failed for {prospective_path_on_disk}")
-
-        relative_file_path_for_cache = os.path.join(upload_subdir_rel, final_filename_on_disk)
-
-        creation_time = time.time()
-        image_width, image_height = None, None # Initialize dimensions
-        try:
-            from PIL import Image as PILImage # Local import to avoid circular deps if moved
-            from PIL import ExifTags
-
-            img_pil = PILImage.open(prospective_path_on_disk)
-            image_width, image_height = img_pil.size # Get dimensions
-
-            exif_data = img_pil.getexif()
-            if exif_data:
-                for tag_id, value in exif_data.items():
-                    tag = ExifTags.TAGS.get(tag_id, tag_id)
-                    if tag == 'DateTimeOriginal':
-                        # Check if value is a string before trying to parse
-                        if isinstance(value, str):
-                            try:
-                                dt_obj = datetime.datetime.strptime(value, '%Y:%m:%d %H:%M:%S')
-                                creation_time = dt_obj.timestamp()
-                            except ValueError:
-                                logging.warning(f"Could not parse EXIF DateTimeOriginal '{value}' for {final_filename_on_disk}. Using default.")
-                        elif isinstance(value, bytes): # Sometimes EXIF data can be bytes
-                            try:
-                                dt_obj = datetime.datetime.strptime(value.decode('utf-8', errors='ignore'), '%Y:%m:%d %H:%M:%S')
-                                creation_time = dt_obj.timestamp()
-                            except (ValueError, UnicodeDecodeError):
-                                logging.warning(f"Could not parse EXIF DateTimeOriginal bytes for {final_filename_on_disk}. Using default.")
-                        break
-        except Exception as e:
-            logging.warning(f"Could not read EXIF data or dimensions for {final_filename_on_disk}: {e}. Using current time as creation_date and no dimensions.")
-
-        MEDIA_DATA_CACHE[sha256_hash] = {
-            'filename': final_filename_on_disk,
-            'original_filename': filename,
-            'file_path': relative_file_path_for_cache,
-            'last_modified': time.time(),
-            'original_creation_date': creation_time,
-            'thumbnail_file': thumbnail_file_name_only,
-            'width': image_width,
-            'height': image_height
-        }
-        logging.info(f"Cache updated for SHA256: {sha256_hash} with file {final_filename_on_disk}, W:{image_width}, H:{image_height}")
-
+    existing_entry = db_utils.get_media_file_by_sha(db_path, sha256_hash)
+    if existing_entry:
+        logging.info(f"Image with SHA256 {sha256_hash} (filename: {s_filename}) already exists in DB. Path: {existing_entry.get('file_path')}")
         return jsonify({
-            "message": "Image uploaded successfully.",
+            "message": "Image content already exists in DB.",
             "sha256": sha256_hash,
-            "filename": final_filename_on_disk,
-            "file_path": relative_file_path_for_cache,
-            "thumbnail_file": thumbnail_file_name_only,
-            "width": image_width,
-            "height": image_height
-        }), 201
+            "filename": existing_entry.get('filename'),
+            "file_path": existing_entry.get('file_path')
+        }), 200 # OK, content already present
+
+    # Determine save path
+    today_str = datetime.datetime.now().strftime('%Y%m%d')
+    upload_subdir_rel = os.path.join("uploads", today_str) # Relative to storage_dir
+    upload_dir_abs = os.path.join(app.config['STORAGE_DIR'], upload_subdir_rel)
+    os.makedirs(upload_dir_abs, exist_ok=True)
+
+    base, ext = os.path.splitext(s_filename)
+    ext = ext.lower()
+    if not base and ext: base = "image" # Handle cases like ".jpg"
+
+    final_filename_on_disk = f"{base}{ext}"
+    prospective_path_on_disk_abs = os.path.join(upload_dir_abs, final_filename_on_disk)
+    counter = 0
+    while os.path.exists(prospective_path_on_disk_abs):
+        counter += 1
+        final_filename_on_disk = f"{base}_{counter}{ext}"
+        prospective_path_on_disk_abs = os.path.join(upload_dir_abs, final_filename_on_disk)
+
+    try:
+        with open(prospective_path_on_disk_abs, "wb") as f_save:
+            f_save.write(file_contents)
+        logging.info(f"Saved new image: {final_filename_on_disk} to {upload_subdir_rel} (SHA256: {sha256_hash})")
+    except IOError as e:
+        logging.error(f"Failed to save file {final_filename_on_disk} to {upload_dir_abs}: {e}")
+        abort(500, description="Failed to save image to disk.")
+
+    # Process the newly saved file to add it to the database
+    # This reuses parts of the scanner logic for a single file.
+    # _process_single_file needs abs_storage_dir, abs_file_path, sha, db_path, thumbnail_dir_abs, disk_filename
+    # We can call a simplified version or directly populate media_data
+
+    thumbnail_dir_abs = app.config['THUMBNAIL_DIR']
+    thumbnail_relative_path = None
+    mime_type_upload, _ = mimetypes.guess_type(prospective_path_on_disk_abs)
+    filesize = os.path.getsize(prospective_path_on_disk_abs)
+
+
+    if mime_type_upload and mime_type_upload.startswith('image/'):
+        thumbnail_relative_path = media_scanner.generate_thumbnail(
+            prospective_path_on_disk_abs,
+            thumbnail_dir_abs,
+            sha256_hash
+        )
+
+    # Extract metadata (simplified from _process_single_file)
+    last_modified = os.path.getmtime(prospective_path_on_disk_abs)
+    original_creation_date = os.path.getctime(prospective_path_on_disk_abs) # Default
+    image_width, image_height = None, None
+    latitude, longitude = None, None
+
+    if mime_type_upload and mime_type_upload.startswith('image/'):
+        try:
+            from PIL import Image as PILImage, ExifTags as PILExifTags # Local import for safety
+            with PILImage.open(prospective_path_on_disk_abs) as img:
+                image_width, image_height = img.size
+                exif_data = img.getexif()
+                if exif_data:
+                    date_tag = 36867 # DateTimeOriginal
+                    if date_tag in exif_data:
+                        exif_date_str = exif_data[date_tag]
+                        try:
+                            dt_obj = datetime.datetime.strptime(exif_date_str, '%Y:%m:%d %H:%M:%S')
+                            original_creation_date = dt_obj.timestamp()
+                        except (ValueError, TypeError): pass # Ignore malformed
+                    lat, lon = media_scanner._get_gps_coordinates_from_exif(exif_data)
+                    if lat is not None: latitude = lat
+                    if lon is not None: longitude = lon
+        except Exception as e:
+            logging.warning(f"Could not read full EXIF for uploaded {final_filename_on_disk}: {e}")
+
+    relative_file_path_for_db = os.path.join(upload_subdir_rel, final_filename_on_disk)
+    media_data = {
+        'sha256_hex': sha256_hash,
+        'filename': final_filename_on_disk, # Name on disk in its upload subfolder
+        'original_filename': original_client_filename, # Original name from client
+        'file_path': relative_file_path_for_db, # Relative to storage_dir
+        'last_modified': last_modified,
+        'original_creation_date': original_creation_date,
+        'thumbnail_file': thumbnail_relative_path,
+        'width': image_width,
+        'height': image_height,
+        'latitude': latitude,
+        'longitude': longitude,
+        'mime_type': mime_type_upload,
+        'filesize': filesize
+    }
+    db_utils.add_or_update_media_file(db_path, media_data)
+    logging.info(f"DB entry created for uploaded SHA256: {sha256_hash}, file {final_filename_on_disk}")
+
+    return jsonify({
+        "message": "Image uploaded and processed successfully.",
+        "sha256": sha256_hash,
+        "filename": final_filename_on_disk,
+        "file_path": relative_file_path_for_db,
+        "thumbnail_file": thumbnail_relative_path,
+        "width": image_width,
+        "height": image_height
+    }), 201
+
 
 @app.route('/image/<string:sha256_hex>', methods=['GET'])
+@app.route('/image/sha256/<string:sha256_hex>', methods=['GET']) # Alias
 def get_image(sha256_hex):
     """Serves an image based on its SHA256 hash."""
     if not (len(sha256_hex) == 64 and all(c in '0123456789abcdefABCDEF' for c in sha256_hex)):
-        logging.warning(f"Invalid SHA256 format requested for image: {sha256_hex}")
         abort(400, description="Invalid SHA256 format.")
 
-    with MEDIA_DATA_LOCK:
-        cached_data = MEDIA_DATA_CACHE.get(sha256_hex)
+    db_entry = db_utils.get_media_file_by_sha(app.config['DATABASE_PATH'], sha256_hex)
+    if not db_entry:
+        abort(404, description="Image not found (SHA unknown in DB).")
 
-    if not cached_data:
-        logging.info(f"Image SHA256 not found in cache: {sha256_hex}")
-        abort(404, description="Image not found (SHA unknown).")
-
-    file_path_relative = cached_data.get('file_path')
+    file_path_relative = db_entry.get('file_path')
     if not file_path_relative:
-        logging.error(f"Cache entry for SHA {sha256_hex} is missing 'file_path'. Cache data: {cached_data}")
-        abort(500, description="Server error: Image metadata incomplete.")
+        abort(500, description="Server error: Image metadata incomplete in DB (no file_path).")
 
-    storage_dir_abs_path = app.config.get('STORAGE_DIR')
-    if not storage_dir_abs_path:
-        logging.error("STORAGE_DIR not configured in the application.")
-        abort(500, description="Server configuration error.")
+    storage_dir_abs = app.config['STORAGE_DIR']
+    # Security check (already in db_utils.get_media_file_by_sha, but defense in depth)
+    full_file_path = os.path.normpath(os.path.join(storage_dir_abs, file_path_relative))
+    if not full_file_path.startswith(os.path.normpath(storage_dir_abs) + os.sep) and \
+       not full_file_path == os.path.normpath(storage_dir_abs):
+        abort(400, description="Invalid file path generated.")
 
-    # send_from_directory expects the directory and then the path *within* that directory.
-    # file_path_relative is already like "uploads/YYYYMMDD/filename.jpg"
-    # So, we pass STORAGE_DIR as the directory and file_path_relative as the filename to send.
-
-    # For added security, ensure the resolved path is still within the storage directory
-    # This check helps prevent potential directory traversal if file_path_relative was crafted maliciously
-    # (though secure_filename and os.path.join should generally be safe).
-    full_file_path = os.path.join(storage_dir_abs_path, file_path_relative)
-    if not os.path.normpath(full_file_path).startswith(os.path.normpath(storage_dir_abs_path) + os.sep) and \
-       not os.path.normpath(full_file_path) == os.path.normpath(storage_dir_abs_path): # check if it's the storage_dir itself
-        logging.error(f"Potential directory traversal attempt for SHA {sha256_hex}. Path: {file_path_relative}")
-        abort(400, description="Invalid file path.")
-
-    from werkzeug.exceptions import NotFound # Import for specific exception handling
     try:
-        logging.info(f"Attempting to serve image: {file_path_relative} from {storage_dir_abs_path} for SHA {sha256_hex}")
-        return send_from_directory(storage_dir_abs_path, file_path_relative) # mimetype will be inferred
+        return send_from_directory(storage_dir_abs, file_path_relative)
     except NotFound:
-        logging.warning(f"Image file not found via send_from_directory: {file_path_relative} in {storage_dir_abs_path} (SHA: {sha256_hex})")
-        # This could happen if cache is out of sync with filesystem
-        abort(404, description="Image file not found on disk.")
-    except Exception as e:
-        logging.error(f"Unexpected error serving image {file_path_relative} (SHA: {sha256_hex}): {e}", exc_info=True)
-        abort(500, description="Internal server error while serving image.")
+        abort(404, description="Image file not found on disk (DB out of sync?).")
 
-@app.route('/image/sha256/<string:sha256_hex>', methods=['GET']) # New route
-def get_image_by_sha256(sha256_hex):
-    """Serves an image based on its SHA256 hash. Alias for /image/<sha256_hex> for clarity."""
-    # This function will be very similar to get_image
-    if not (len(sha256_hex) == 64 and all(c in '0123456789abcdefABCDEF' for c in sha256_hex)):
-        logging.warning(f"Invalid SHA256 format requested for image: {sha256_hex}")
-        abort(400, description="Invalid SHA256 format.")
-
-    with MEDIA_DATA_LOCK:
-        cached_data = MEDIA_DATA_CACHE.get(sha256_hex)
-
-    if not cached_data:
-        logging.info(f"Image SHA256 not found in cache: {sha256_hex}")
-        abort(404, description="Image not found (SHA unknown).")
-
-    file_path_relative = cached_data.get('file_path')
-    if not file_path_relative:
-        logging.error(f"Cache entry for SHA {sha256_hex} is missing 'file_path'. Cache data: {cached_data}")
-        abort(500, description="Server error: Image metadata incomplete.")
-
-    storage_dir_abs_path = app.config.get('STORAGE_DIR')
-    if not storage_dir_abs_path:
-        logging.error("STORAGE_DIR not configured in the application.")
-        abort(500, description="Server configuration error.")
-
-    full_file_path = os.path.join(storage_dir_abs_path, file_path_relative)
-    # Security check: Ensure the path is within the storage directory
-    if not os.path.normpath(full_file_path).startswith(os.path.normpath(storage_dir_abs_path) + os.sep) and \
-       not os.path.normpath(full_file_path) == os.path.normpath(storage_dir_abs_path):
-        logging.error(f"Potential directory traversal attempt for SHA {sha256_hex}. Path: {file_path_relative}")
-        abort(400, description="Invalid file path.")
-
-    from werkzeug.exceptions import NotFound # Import for specific exception handling
-    try:
-        logging.info(f"Attempting to serve image: {file_path_relative} from {storage_dir_abs_path} for SHA {sha256_hex} via /image/sha256/ endpoint")
-        return send_from_directory(storage_dir_abs_path, file_path_relative)
-    except NotFound:
-        logging.warning(f"Image file not found via send_from_directory: {file_path_relative} in {storage_dir_abs_path} (SHA: {sha256_hex})")
-        abort(404, description="Image file not found on disk.")
-    except Exception as e:
-        logging.error(f"Unexpected error serving image {file_path_relative} (SHA: {sha256_hex}): {e}", exc_info=True)
-        abort(500, description="Internal server error while serving image.")
 
 @app.route('/thumbnail/<string:sha256_hex>', methods=['GET'])
 def get_thumbnail(sha256_hex):
-    """Serves a thumbnail image if it exists."""
-    # Validate sha256_hex format (64 hex characters)
+    """Serves a thumbnail image."""
     if not (len(sha256_hex) == 64 and all(c in '0123456789abcdefABCDEF' for c in sha256_hex)):
-        logging.warning(f"Invalid SHA256 format requested: {sha256_hex}")
         abort(400, description="Invalid SHA256 format.")
 
-    thumbnail_dir_abs_path = app.config.get('THUMBNAIL_DIR')
-    if not thumbnail_dir_abs_path:
-        logging.error("Thumbnail directory not configured in the application.")
-        abort(500, description="Server configuration error.")
+    db_entry = db_utils.get_media_file_by_sha(app.config['DATABASE_PATH'], sha256_hex)
+    if not db_entry:
+        abort(404, description="Image SHA not found in DB, so no thumbnail.")
 
-    # Ensure the thumbnail directory itself exists, though send_from_directory handles file not found.
-    # This check is more for sanity during development or if the dir should always exist.
-    if not os.path.isdir(thumbnail_dir_abs_path):
-        logging.warning(f"Thumbnail directory does not exist: {thumbnail_dir_abs_path}")
-        # If the .thumbnails directory itself doesn't exist, no thumbnails can exist.
-        abort(404, description="Thumbnail not found (directory missing).")
+    thumbnail_relative_path = db_entry.get('thumbnail_file')
+    if not thumbnail_relative_path:
+        # This could be a non-image file, or thumbnail generation failed.
+        # Check mime type from db_entry to return more specific error or placeholder
+        mime_type = db_entry.get('mime_type')
+        if mime_type and mime_type.startswith('video/'):
+             # TODO: Could serve a generic video icon thumbnail later
+            abort(404, description=f"Thumbnails not supported for video type {mime_type} yet, or this video has no thumbnail.")
+        abort(404, description="Thumbnail not available for this item.")
 
-    # Import Werkzeug's NotFound exception
-    from werkzeug.exceptions import NotFound
+    thumbnail_dir_abs = app.config['THUMBNAIL_DIR']
+    if not os.path.isdir(thumbnail_dir_abs): # Should have been created by scanner
+        abort(500, description="Thumbnail directory misconfigured or missing on server.")
 
-    # Attempt to get the thumbnail path from cache first
-    thumbnail_relative_path = None
-    with MEDIA_DATA_LOCK:
-        cached_data = MEDIA_DATA_CACHE.get(sha256_hex)
-        if cached_data:
-            thumbnail_relative_path = cached_data.get('thumbnail_file') # Should be like 'ab/hash.png'
-
-    if thumbnail_relative_path:
-        # Ensure the cached path is somewhat sane (e.g., contains a separator)
-        if os.sep not in thumbnail_relative_path and '/' not in thumbnail_relative_path:
-             logging.warning(f"Cached thumbnail path for {sha256_hex} ('{thumbnail_relative_path}') "
-                             f"does not look like a subdirectory path. Attempting legacy fallback.")
-             # Fallback to old naming convention if path from cache is not in new format
-             # This could happen if cache is from an older version or item wasn't processed correctly
-             sha256_prefix = sha256_hex[:2]
-             thumbnail_filename_only = f"{sha256_hex}{media_scanner.THUMBNAIL_EXTENSION}"
-             thumbnail_relative_path = os.path.join(sha256_prefix, thumbnail_filename_only)
-    else:
-        # If not in cache or cache doesn't have thumbnail_file, construct the path
-        logging.debug(f"Thumbnail for SHA {sha256_hex} not found in cache or cache entry missing 'thumbnail_file'. Constructing path.")
-        sha256_prefix = sha256_hex[:2]
-        thumbnail_filename_only = f"{sha256_hex}{media_scanner.THUMBNAIL_EXTENSION}"
-        thumbnail_relative_path = os.path.join(sha256_prefix, thumbnail_filename_only)
-        # Also try to serve from the flat directory for backward compatibility if the above fails.
-        # This will be handled by trying both paths below.
-
-    # Path to the actual thumbnail file, e.g., /base_thumb_dir/ab/hash.png
-    # send_from_directory needs the directory and the filename *within* that directory.
-    # thumbnail_relative_path is 'ab/hash.png'
-    # So, thumbnail_dir_abs_path is '.thumbnails', and we pass 'ab/hash.png' as the 'path' argument.
+    # Security check for thumbnail_relative_path (e.g. 'ab/hash.png')
+    # Ensure it doesn't try to escape thumbnail_dir_abs
+    full_thumb_path = os.path.normpath(os.path.join(thumbnail_dir_abs, thumbnail_relative_path))
+    if not full_thumb_path.startswith(os.path.normpath(thumbnail_dir_abs) + os.sep):
+        abort(400, description="Invalid thumbnail path.")
 
     try:
-        logging.info(f"Attempting to serve thumbnail: {thumbnail_relative_path} from {thumbnail_dir_abs_path}")
-        return send_from_directory(thumbnail_dir_abs_path, thumbnail_relative_path, mimetype='image/png')
+        return send_from_directory(thumbnail_dir_abs, thumbnail_relative_path, mimetype='image/png')
     except NotFound:
-        logging.info(f"Thumbnail not found at new path: {os.path.join(thumbnail_dir_abs_path, thumbnail_relative_path)}. "
-                     f"Attempting legacy flat path for SHA: {sha256_hex}")
-        # Fallback for older, flatly stored thumbnails
-        legacy_thumbnail_filename = f"{sha256_hex}{media_scanner.THUMBNAIL_EXTENSION}"
-        try:
-            return send_from_directory(thumbnail_dir_abs_path, legacy_thumbnail_filename, mimetype='image/png')
-        except NotFound:
-            logging.info(f"Thumbnail not found at legacy path either: {os.path.join(thumbnail_dir_abs_path, legacy_thumbnail_filename)}")
-            abort(404, description="Thumbnail not found.")
-    except Exception as e: # Catch any other unexpected errors
-        logging.error(f"Unexpected error serving thumbnail {thumbnail_relative_path} for SHA {sha256_hex}: {e}", exc_info=True)
-        abort(500, description="Internal server error while serving thumbnail.")
+         # This implies DB has a thumbnail_file entry, but the file is missing.
+        logging.warning(f"Thumbnail file {thumbnail_relative_path} for SHA {sha256_hex} not found on disk (DB out of sync?).")
+        # Scanner should ideally clean this up or regenerate.
+        abort(404, description="Thumbnail file missing on disk.")
 
 
 def run_flask_app(argv):
-    """Starts the Flask server after scanning the media directory."""
-    # argv is parsed by absl.app.run automatically.
-    global MEDIA_DATA_CACHE
+    """Configures and starts the Flask server."""
+    del argv # Unused.
 
     logging.set_verbosity(logging.INFO)
 
-    if not FLAGS.storage_dir:
+    storage_dir = FLAGS.storage_dir
+    if not storage_dir:
         logging.error("Storage directory not provided via --storage_dir flag.")
         sys.exit(1)
 
-    app.config['STORAGE_DIR'] = FLAGS.storage_dir
-    app.config['THUMBNAIL_DIR'] = os.path.join(FLAGS.storage_dir, media_scanner.THUMBNAIL_DIR_NAME)
+    # Make storage_dir absolute
+    storage_dir = os.path.abspath(storage_dir)
+    os.makedirs(storage_dir, exist_ok=True) # Ensure storage_dir exists
 
+    app.config['STORAGE_DIR'] = storage_dir
+    app.config['THUMBNAIL_DIR'] = os.path.join(storage_dir, media_scanner.THUMBNAIL_DIR_NAME)
+    os.makedirs(app.config['THUMBNAIL_DIR'], exist_ok=True) # Ensure .thumbnails exists
 
-    logging.info(f"Initial scan of storage directory: {app.config['STORAGE_DIR']}")
-    # Initial scan populates the cache
-    with MEDIA_DATA_LOCK:
-        MEDIA_DATA_CACHE = media_scanner.scan_directory(app.config['STORAGE_DIR'], rescan=False)
+    # Database path configuration
+    # db_utils.get_db_path will use this name inside storage_dir
+    app.config['DATABASE_PATH'] = db_utils.get_db_path(storage_dir) # FLAGS.db_name is just the filename
+    app.config['RESCAN_INTERVAL'] = FLAGS.rescan_interval
 
-    if not MEDIA_DATA_CACHE:
-        logging.warning("Initial media scan resulted in no data. Server will start with an empty list.")
+    logging.info(f"Storage directory: {app.config['STORAGE_DIR']}")
+    logging.info(f"Thumbnail directory: {app.config['THUMBNAIL_DIR']}")
+    logging.info(f"Database path: {app.config['DATABASE_PATH']}")
+
+    # Initialize DB (create tables if not exist)
+    # This init_db is for the main thread. It will use its own connection.
+    try:
+        db_utils.init_db(storage_dir) # Pass storage_dir so it can construct the correct db_path
+    except Exception as e:
+        logging.error(f"Failed to initialize database at {app.config['DATABASE_PATH']}: {e}", exc_info=True)
+        sys.exit(1)
+    finally:
+        db_utils.close_db_connection() # Close connection for main thread after init
+
+    # Initial scan of the media directory (rescan=False)
+    logging.info(f"Performing initial scan of storage directory: {app.config['STORAGE_DIR']}")
+    try:
+        media_scanner.scan_directory(app.config['STORAGE_DIR'], app.config['DATABASE_PATH'], rescan=False)
+    except Exception as e:
+        logging.error(f"Error during initial scan: {e}", exc_info=True)
+        # Decide if server should start if initial scan fails. For now, it will.
+    finally:
+        db_utils.close_db_connection() # Close connection for main thread after scan
+
+    num_items_in_db = len(db_utils.get_all_media_files(app.config['DATABASE_PATH']))
+    logging.info(f"Initial scan complete. Database contains {num_items_in_db} items.")
+    db_utils.close_db_connection() # Close again, just in case get_all_media_files opened one.
 
     if FLAGS.rescan_interval > 0:
-        scanner_thread = threading.Thread(target=background_scanner_task, daemon=True)
+        # Pass the current app's context to the thread if needed for config
+        scanner_thread = threading.Thread(target=background_scanner_task, args=(app.app_context(),), daemon=True)
         scanner_thread.start()
     else:
-        logging.info("Background rescanning disabled (rescan_interval <= 0).")
+        logging.info("Background rescanning disabled.")
 
     logging.info(f"Starting Flask HTTP server on port {FLAGS.port}...")
-    # Setting use_reloader=False because it can cause issues with absl flags and background threads
-    # For development, reloader is useful, but for this setup, it's safer to disable.
-    # Debug mode should also be False for this setup unless specifically needed for Flask debugging.
     app.run(host='0.0.0.0', port=FLAGS.port, debug=False, use_reloader=False)
 
 def main_flask():
-    # absl.app.run will parse flags and then call run_flask_app
     absl_app.run(run_flask_app)
 
 if __name__ == '__main__':
