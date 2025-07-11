@@ -13,6 +13,90 @@ mimetypes.init()
 # Register HEIF opener for Pillow
 register_heif_opener()
 
+# GPS EXIF Processing
+GPS_TAG_ID = None
+for k, v in ExifTags.TAGS.items():
+    if v == "GPSInfo":
+        GPS_TAG_ID = k
+        break
+
+# GPSInfo sub-tags (values are integers)
+GPS_LATITUDE_REF_TAG = 1
+GPS_LATITUDE_TAG = 2
+GPS_LONGITUDE_REF_TAG = 3
+GPS_LONGITUDE_TAG = 4
+
+
+def _convert_dms_to_decimal(dms_tuple: Tuple[float, ...], ref: str) -> Optional[float]:
+    """Converts GPS DMS (Degrees, Minutes, Seconds) to decimal degrees."""
+    if not dms_tuple or len(dms_tuple) != 3:
+        return None
+
+    try:
+        # Each component (deg, min, sec) could be an IFDRational (which acts like a float)
+        # or a simple number if coming from a mock, or a (num, den) tuple if mock is structured that way.
+        def to_float(val):
+            if isinstance(val, tuple) and len(val) == 2: # Check if it's a (numerator, denominator) tuple
+                return float(val[0]) / float(val[1])
+            return float(val) # Handles numbers and IFDRational
+
+        degrees_val = to_float(dms_tuple[0])
+        minutes_val = to_float(dms_tuple[1])
+        seconds_val = to_float(dms_tuple[2])
+    except (TypeError, ValueError, ZeroDivisionError) as e:
+        logging.warning(f"Could not parse DMS component: {dms_tuple}. Error: {e}")
+        return None
+
+    decimal_degrees = degrees_val + (minutes_val / 60.0) + (seconds_val / 3600.0)
+
+    if ref in ['S', 'W']:
+        decimal_degrees = -decimal_degrees
+    elif ref not in ['N', 'E']:
+        logging.warning(f"Invalid GPS reference: {ref}")
+        return None # Or raise an error, but None is safer for optional data
+    return decimal_degrees
+
+
+def _get_gps_coordinates_from_exif(exif_data: dict) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Extracts GPS latitude and longitude from EXIF data.
+
+    Args:
+        exif_data: A dictionary of EXIF data from Pillow's img.getexif().
+
+    Returns:
+        A tuple (latitude, longitude) in decimal degrees, or (None, None) if not found.
+    """
+    latitude = None
+    longitude = None
+
+    if not exif_data or not GPS_TAG_ID:
+        return None, None
+
+    gps_info = exif_data.get(GPS_TAG_ID)
+    if not gps_info:
+        return None, None
+
+    try:
+        # Latitude
+        gps_latitude_raw = gps_info.get(GPS_LATITUDE_TAG)
+        gps_latitude_ref = gps_info.get(GPS_LATITUDE_REF_TAG)
+        if gps_latitude_raw and gps_latitude_ref:
+            latitude = _convert_dms_to_decimal(gps_latitude_raw, gps_latitude_ref)
+
+        # Longitude
+        gps_longitude_raw = gps_info.get(GPS_LONGITUDE_TAG)
+        gps_longitude_ref = gps_info.get(GPS_LONGITUDE_REF_TAG)
+        if gps_longitude_raw and gps_longitude_ref:
+            longitude = _convert_dms_to_decimal(gps_longitude_raw, gps_longitude_ref)
+
+    except Exception as e:
+        logging.warning(f"Error parsing GPS EXIF data: {e}. GPS Info was: {gps_info}")
+        return None, None # Return None if any error occurs during parsing
+
+    return latitude, longitude
+
+
 THUMBNAIL_DIR_NAME = ".thumbnails"
 THUMBNAIL_SIZE = (256, 256)
 THUMBNAIL_EXTENSION = ".png"
@@ -339,6 +423,7 @@ def scan_directory(storage_dir: str,
                             filesystem_creation_time = os.path.getctime(abs_file_path)
                             original_creation_date = filesystem_creation_time # Default
                             image_width, image_height = None, None
+                            latitude, longitude = None, None # Initialize GPS coordinates
 
                             if mime_type and mime_type.startswith('image/'):
                                 try:
@@ -346,13 +431,24 @@ def scan_directory(storage_dir: str,
                                         image_width, image_height = img.size
                                         exif_data = img.getexif()
                                         if exif_data:
-                                            date_time_original_tag = 36867 # DateTimeOriginal
+                                            # DateTimeOriginal
+                                            date_time_original_tag = 36867
                                             if date_time_original_tag in exif_data:
                                                 exif_date_str = exif_data[date_time_original_tag]
-                                                dt_object = datetime.strptime(exif_date_str, '%Y:%m:%d %H:%M:%S')
-                                                original_creation_date = dt_object.timestamp()
+                                                try:
+                                                    dt_object = datetime.strptime(exif_date_str, '%Y:%m:%d %H:%M:%S')
+                                                    original_creation_date = dt_object.timestamp()
+                                                except ValueError:
+                                                    logging.warning(f"Malformed DateTimeOriginal '{exif_date_str}' in {abs_file_path}. Using filesystem time.")
+
+                                            # Extract GPS data using the helper function
+                                            parsed_lat, parsed_lon = _get_gps_coordinates_from_exif(exif_data)
+                                            if parsed_lat is not None:
+                                                latitude = parsed_lat
+                                            if parsed_lon is not None:
+                                                longitude = parsed_lon
                                 except Exception as exif_e: # Catching a broader exception here as Image.open can also fail
-                                    logging.warning(f"Could not read EXIF or dimensions for {abs_file_path}: {exif_e}. Using filesystem time for creation_date.")
+                                    logging.warning(f"Could not read EXIF, dimensions, or GPS for {abs_file_path}: {exif_e}. Using filesystem time for creation_date.")
 
                             entry_data = {
                                 'filename': disk_filename, # Actual name on disk
@@ -362,10 +458,12 @@ def scan_directory(storage_dir: str,
                                 'original_creation_date': original_creation_date,
                                 'thumbnail_file': thumbnail_relative_path, # Store the relative path
                                 'width': image_width,
-                                'height': image_height
+                                'height': image_height,
+                                'latitude': latitude,   # Will be None if not found/parsed
+                                'longitude': longitude  # Will be None if not found/parsed
                             }
                             current_media_data[sha256_hex] = entry_data
-                            logging.debug(f"Cache ADDED/UPDATED for SHA: {sha256_hex}, file: {disk_filename}, path: {rel_file_path}, thumb: {thumbnail_relative_path}, W: {image_width}, H: {image_height}")
+                            logging.debug(f"Cache ADDED/UPDATED for SHA: {sha256_hex}, file: {disk_filename}, path: {rel_file_path}, thumb: {thumbnail_relative_path}, W: {image_width}, H: {image_height}, Lat: {latitude}, Lon: {longitude}")
                             # Add to known_file_paths if it's a new path being processed in this walk
                             known_file_paths.add(rel_file_path)
 
