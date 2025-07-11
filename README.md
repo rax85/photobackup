@@ -71,18 +71,42 @@ The server exposes the following HTTP API endpoints:
 *   **Request:** None.
 *   **Success Response:**
     *   `200 OK`
-    *   Body (JSON): An object where keys are SHA256 hashes of media items, and values are objects containing their metadata.
+    *   Body (JSON): An object where keys are SHA256 hashes of media items, and values are objects containing their metadata:
+        *   `filename`: (string) Current filename on disk.
+        *   `original_filename`: (string) Original filename at the time of first scan or upload.
+        *   `file_path`: (string) Relative path to the media file from the `storage_dir`.
+        *   `last_modified`: (float) Unix timestamp of the file's last modification time.
+        *   `original_creation_date`: (float) Unix timestamp of the media's original creation (from EXIF if available, otherwise file system creation time).
+        *   `thumbnail_file`: (string, optional) Relative path to the thumbnail within the thumbnail directory (e.g., `.thumbnails/ab/hash.png`). Null if no thumbnail (e.g., for videos or if generation failed).
+        *   `width`: (integer, optional) Width of the image in pixels. Null for non-image types or if not determined.
+        *   `height`: (integer, optional) Height of the image in pixels. Null for non-image types or if not determined.
+        *   `latitude`: (float, optional) GPS latitude in decimal degrees, if available from EXIF. Null otherwise.
+        *   `longitude`: (float, optional) GPS longitude in decimal degrees (negative for West/South), if available from EXIF. Null otherwise.
         ```json
         {
           "sha256_hash_1": {
             "filename": "image.jpg",
             "original_filename": "original_image_name.jpg",
-            "file_path": "relative/path/to/image.jpg", // Relative to storage_dir
-            "last_modified": 1678886400.0, // Unix timestamp of last file modification
-            "original_creation_date": 1678880000.0, // Unix timestamp (from EXIF or file system ctime)
-            "thumbnail_file": "ab/abcdef123.png", // Relative path within thumbnail_dir (e.g., .thumbnails/ab/hash.png)
-            "width": 1920, // Image width in pixels
-            "height": 1080 // Image height in pixels
+            "file_path": "relative/path/to/image.jpg",
+            "last_modified": 1678886400.0,
+            "original_creation_date": 1678880000.0,
+            "thumbnail_file": "ab/abcdef123.png",
+            "width": 1920,
+            "height": 1080,
+            "latitude": 34.0522,
+            "longitude": -118.2437
+          },
+          "another_sha_hash": {
+            "filename": "photo_without_gps.png",
+            "original_filename": "photo_without_gps.png",
+            "file_path": "subdir/photo_without_gps.png",
+            "last_modified": 1678890000.0,
+            "original_creation_date": 1678881000.0,
+            "thumbnail_file": "cd/anotherhash.png",
+            "width": 800,
+            "height": 600,
+            "latitude": null,
+            "longitude": null
           }
           // ... more items
         }
