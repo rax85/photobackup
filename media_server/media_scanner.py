@@ -9,8 +9,10 @@ from pillow_heif import register_heif_opener
 
 try:
     from . import database as db_utils # Relative import for package
+    from .geolocator import GeoLocator
 except ImportError:
     from media_server import database as db_utils # Fallback for direct execution/testing
+    from media_server.geolocator import GeoLocator
 
 # Initialize mimetypes database
 mimetypes.init()
@@ -68,10 +70,14 @@ def _get_gps_coordinates_from_exif(exif_data: dict) -> Tuple[Optional[float], Op
     if not exif_data or not GPS_TAG_ID:
         return None, None
 
-    gps_info = exif_data.get(GPS_TAG_ID)
+    try:
+        gps_info = exif_data.get_ifd(GPS_TAG_ID)
+    except KeyError:
+        return None, None
     if not gps_info:
         return None, None
 
+    logging.info(f"GPS Info: {gps_info}")
     try:
         gps_latitude_raw = gps_info.get(GPS_LATITUDE_TAG)
         gps_latitude_ref = gps_info.get(GPS_LATITUDE_REF_TAG)
@@ -204,6 +210,10 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
     os.makedirs(thumbnail_dir_abs, exist_ok=True)
     logging.info(f"Thumbnail directory ensured at: {thumbnail_dir_abs}")
 
+    geolocator = GeoLocator()
+    cities_csv_path = os.path.join(os.path.dirname(__file__), 'resources', 'cities.csv')
+    geolocator.load_cities(cities_csv_path)
+
     abs_storage_dir = os.path.abspath(storage_dir)
     processed_rel_file_paths: Set[str] = set() # Keep track of files processed in this scan run
 
@@ -254,7 +264,7 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
                         logging.info(f"Timestamp updated for {rel_file_path} (SHA: {sha256_hex}). Re-extracting metadata.")
                         # Re-extract metadata and update DB. Thumbnail should be fine if SHA is same.
                         # However, if thumbnail was missing, try to regenerate.
-                        _process_single_file(abs_storage_dir, abs_file_path_to_check, sha256_hex, db_path, thumbnail_dir_abs, db_entry.get('original_filename', os.path.basename(rel_file_path)))
+                        _process_single_file(abs_storage_dir, abs_file_path_to_check, sha256_hex, db_path, thumbnail_dir_abs, geolocator, db_entry.get('original_filename', os.path.basename(rel_file_path)))
                         # No need to remove from processed_rel_file_paths, as it's updated.
                 else:
                     # File exists and last_modified is same.
@@ -331,7 +341,7 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
                 # Or it's rescan=false and we are doing a full pass.
                 sha256_hex = get_file_sha256(abs_file_path)
                 if sha256_hex:
-                    _process_single_file(abs_storage_dir, abs_file_path, sha256_hex, db_path, thumbnail_dir_abs, disk_filename, db_entry_for_path)
+                    _process_single_file(abs_storage_dir, abs_file_path, sha256_hex, db_path, thumbnail_dir_abs, geolocator, disk_filename, db_entry_for_path)
                     processed_rel_file_paths.add(rel_file_path)
                 else:
                     logging.warning(f"Could not get SHA256 for {abs_file_path}. Skipping.")
@@ -370,7 +380,7 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
     # This function no longer returns the data directly.
     # Callers should query the DB as needed.
 
-def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: str, db_path: str, thumbnail_dir_abs: str, disk_filename: str, existing_db_entry_for_path: Optional[Dict] = None):
+def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: str, db_path: str, thumbnail_dir_abs: str, geolocator: GeoLocator, disk_filename: str, existing_db_entry_for_path: Optional[Dict] = None):
     """Helper to process a single media file and update the database."""
     rel_file_path = os.path.relpath(abs_file_path, abs_storage_dir)
     logging.debug(f"Processing details for: {rel_file_path} (SHA: {sha256_hex})")
@@ -387,7 +397,7 @@ def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: s
         filesystem_creation_time = os.path.getctime(abs_file_path)
         original_creation_date = filesystem_creation_time
         image_width, image_height = None, None
-        latitude, longitude = None, None
+        latitude, longitude, city, country = None, None, None, None
 
         if mime_type and mime_type.startswith('image/'):
             try:
@@ -406,6 +416,12 @@ def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: s
                         parsed_lat, parsed_lon = _get_gps_coordinates_from_exif(exif_data)
                         if parsed_lat is not None: latitude = parsed_lat
                         if parsed_lon is not None: longitude = parsed_lon
+
+                        if latitude and longitude:
+                            closest_city = geolocator.nearest_city(latitude, longitude)
+                            if closest_city:
+                                city = closest_city.name
+                                country = closest_city.country
             except Exception as exif_e:
                 logging.warning(f"Could not read metadata for {abs_file_path}: {exif_e}.")
 
@@ -432,6 +448,8 @@ def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: s
             'height': image_height,
             'latitude': latitude,
             'longitude': longitude,
+            'city': city,
+            'country': country,
             'mime_type': mime_type,
             'filesize': filesize,
         }
