@@ -418,6 +418,7 @@ def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: s
                         if parsed_lon is not None: longitude = parsed_lon
 
                         if latitude and longitude:
+                            logging.info(f"Lat: {latitude}, Lon: {longitude}")
                             closest_city = geolocator.nearest_city(latitude, longitude)
                             if closest_city:
                                 city = closest_city.name
