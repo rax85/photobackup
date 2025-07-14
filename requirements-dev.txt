@@ -1,5 +1,6 @@
 # For development and running tests
 requests
+piexif
 # Add other testing specific dependencies here, e.g.
 # pytest
 # coverage

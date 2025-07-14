@@ -4,3 +4,4 @@ Pillow
 Flask
 Werkzeug
 pillow-heif
+piexif
