@@ -1,7 +1,7 @@
 import csv
 from dataclasses import dataclass
 from math import radians, sin, cos, sqrt, atan2
-
+from threading import Lock
 
 @dataclass
 class City:
@@ -10,24 +10,40 @@ class City:
     latitude: float
     longitude: float
 
-
 class GeoLocator:
+    _instance = None
+    _lock = Lock()
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            with cls._lock:
+                if not cls._instance:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self):
         self.cities = []
+        self.loaded = False
 
     def load_cities(self, csv_file):
-        with open(csv_file, 'r') as f:
-            reader = csv.reader(f)
-            next(reader)  # Skip header
-            for row in reader:
-                self.cities.append(
-                    City(
-                        name=row[0],
-                        latitude=float(row[1]),
-                        longitude=float(row[2]),
-                        country=row[3],
+        if self.loaded:
+            return
+        with self._lock:
+            if self.loaded:
+                return
+            with open(csv_file, 'r') as f:
+                reader = csv.reader(f)
+                next(reader)  # Skip header
+                for row in reader:
+                    self.cities.append(
+                        City(
+                            name=row[0],
+                            latitude=float(row[1]),
+                            longitude=float(row[2]),
+                            country=row[3],
+                        )
                     )
-                )
+            self.loaded = True
 
     def nearest_city(self, latitude, longitude):
         if not self.cities:
