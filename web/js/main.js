@@ -469,4 +469,71 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
         console.error('Upload UI elements not found. Upload functionality will not work.');
     }
+
+    // Search functionality
+    const searchInput = document.getElementById('searchInput');
+    const searchButton = document.getElementById('searchButton');
+    const resetButton = document.getElementById('resetButton');
+
+    if (searchInput && searchButton && resetButton) {
+        searchButton.addEventListener('click', handleSearch);
+        searchInput.addEventListener('keyup', (event) => {
+            if (event.key === 'Enter') {
+                handleSearch();
+            }
+        });
+        resetButton.addEventListener('click', () => {
+            searchInput.value = '';
+            fetchMediaList();
+        });
+
+        async function handleSearch() {
+            const query = searchInput.value.trim();
+            if (!query) {
+                return;
+            }
+
+            let url;
+            const parts = query.split(':').map(p => p.trim());
+            const command = parts[0].toLowerCase();
+            const value = parts[1];
+
+            if (command === 'date' && value) {
+                url = `/list/date/${value}`;
+            } else if (command === 'between' && value) {
+                const dates = value.split(',').map(d => d.trim());
+                if (dates.length === 2) {
+                    url = `/list/daterange/${dates[0]}/${dates[1]}`;
+                }
+            } else if (command === 'location' && value) {
+                url = `/list/location/${value}`;
+            } else {
+                alert('Invalid query format. Use "date: YYYY-MM-DD", "between: YYYY-MM-DD, YYYY-MM-DD", or "location: city".');
+                return;
+            }
+
+            if (url) {
+                try {
+                    const response = await fetch(url);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const data = await response.json();
+                    const searchResultItems = Object.entries(data).map(([sha256, itemData]) => ({
+                        sha256,
+                        ...itemData
+                    }));
+                    searchResultItems.sort((a, b) => (b.original_creation_date || 0) - (a.original_creation_date || 0));
+
+                    const groupedMedia = groupMediaByMonthYear(searchResultItems);
+                    displayMedia(groupedMedia);
+                    initializePhotoSwipe();
+                    displayNavigationSidebar(groupedMedia);
+                } catch (error) {
+                    console.error("Error fetching search results:", error);
+                    galleryGrid.innerHTML = '<p>Error loading search results. Please try again later.</p>';
+                }
+            }
+        }
+    }
 });

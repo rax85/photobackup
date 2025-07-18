@@ -240,6 +240,10 @@ The application includes a responsive web frontend for browsing and interacting 
     *   A Floating Action Button (FAB) is persistently displayed in the bottom-right corner, allowing users to easily initiate image uploads.
     *   A modal dialog shows the progress of file uploads.
     *   The gallery view automatically refreshes to include newly uploaded images upon successful completion.
+*   **Search:**
+    *   A search box in the header allows filtering the gallery.
+    *   Supported queries: `date: YYYY-MM-DD`, `between: YYYY-MM-DD, YYYY-MM-DD`, and `location: city`.
+    *   A reset button clears the search and restores the full gallery view.
 
 **Technologies Used (Frontend):**
 *   HTML5
