@@ -52,7 +52,15 @@ app = Flask(__name__, static_folder=WEB_DIR_ABSOLUTE, static_url_path='')
 
 # --- Database Connection Handling ---
 def get_db():
-    """Opens a new database connection if there is none yet for the current application context."""
+    """
+    Returns a database connection for the current application context.
+
+    If a connection does not exist, it creates one and stores it in the
+    application context (`flask.g`) for reuse during the same request.
+
+    Returns:
+        A sqlite3.Connection object.
+    """
     if not hasattr(flask_g, 'sqlite_db'):
         db_path = app.config.get('DATABASE_PATH')
         if not db_path:
@@ -76,14 +84,30 @@ def get_db():
 
 @app.teardown_appcontext
 def close_db(error):
-    """Closes the database again at the end of the request."""
+    """
+    Closes the database connection at the end of the request.
+
+    This function is registered with Flask's `teardown_appcontext` and is
+    automatically called when the application context is popped.
+
+    Args:
+        error: An exception that occurred during the request, if any.
+    """
     if hasattr(flask_g, 'sqlite_db'):
         db_utils.close_db_connection() # This uses thread_local.connection
         delattr(flask_g, 'sqlite_db') # Remove from flask_g
 
 # --- Background Scanner ---
 def background_scanner_task(app_context):
-    """Periodically rescans the storage directory and updates the database."""
+    """
+    A background task that periodically rescans the storage directory.
+
+    This function runs in a separate thread and triggers a rescan of the
+    media directory at a configurable interval.
+
+    Args:
+        app_context: The Flask application context.
+    """
     # Background thread needs to manage its own DB connection via db_utils.thread_local
     # It doesn't use flask_g.
     # The app_context is passed to allow the thread to configure logging or other app settings if needed
@@ -120,12 +144,22 @@ def background_scanner_task(app_context):
 # --- Flask Routes ---
 @app.route('/')
 def root():
-    """Serves the main index.html page."""
+    """
+    Serves the main `index.html` page.
+
+    Returns:
+        The `index.html` file from the static folder.
+    """
     return app.send_static_file('index.html')
 
 @app.route('/list', methods=['GET'])
 def list_media():
-    """Handles GET requests for /list endpoint, returns all media from DB."""
+    """
+    Returns a list of all media files in the database.
+
+    Returns:
+        A JSON response containing a dictionary of all media files.
+    """
     # get_db() will be called implicitly by db_utils if using flask_g,
     # or db_utils manages its own thread_local connection.
     # For request context, get_db() here ensures flask_g.sqlite_db is set.
@@ -141,12 +175,33 @@ def list_media():
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'heic', 'heif', 'mp4', 'mov', 'avi'}
 
 def allowed_file(filename):
+    """
+    Checks if a filename has an allowed extension.
+
+    Args:
+        filename: The name of the file to check.
+
+    Returns:
+        True if the filename has an allowed extension, False otherwise.
+    """
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.route('/image/<path:filename>', methods=['PUT'])
 def put_image(filename): # filename comes from the <path:filename> URL part
-    """Handles PUT requests for image uploads."""
+    """
+    Handles image uploads via PUT request.
+
+    This endpoint allows clients to upload new image files. The server saves
+    the file, generates a thumbnail, and adds a corresponding entry to the
+    database.
+
+    Args:
+        filename: The filename for the uploaded image, extracted from the URL.
+
+    Returns:
+        A JSON response with details of the uploaded image or an error message.
+    """
     if 'file' not in request.files:
         abort(400, description="No file part in the request.")
 
@@ -283,7 +338,15 @@ def put_image(filename): # filename comes from the <path:filename> URL part
 @app.route('/image/<string:sha256_hex>', methods=['GET'])
 @app.route('/image/sha256/<string:sha256_hex>', methods=['GET']) # Alias
 def get_image(sha256_hex):
-    """Serves an image based on its SHA256 hash."""
+    """
+    Serves an image file based on its SHA256 hash.
+
+    Args:
+        sha256_hex: The SHA256 hash of the image to retrieve.
+
+    Returns:
+        The image file as a response, or a 404 error if not found.
+    """
     if not (len(sha256_hex) == 64 and all(c in '0123456789abcdefABCDEF' for c in sha256_hex)):
         abort(400, description="Invalid SHA256 format.")
 
@@ -310,7 +373,15 @@ def get_image(sha256_hex):
 
 @app.route('/thumbnail/<string:sha256_hex>', methods=['GET'])
 def get_thumbnail(sha256_hex):
-    """Serves a thumbnail image."""
+    """
+    Serves a thumbnail image for a given SHA256 hash.
+
+    Args:
+        sha256_hex: The SHA256 hash of the original image.
+
+    Returns:
+        The thumbnail image file as a response, or a 404 error if not found.
+    """
     if not (len(sha256_hex) == 64 and all(c in '0123456789abcdefABCDEF' for c in sha256_hex)):
         abort(400, description="Invalid SHA256 format.")
 
@@ -348,7 +419,15 @@ def get_thumbnail(sha256_hex):
 
 
 def run_flask_app(argv):
-    """Configures and starts the Flask server."""
+    """
+    Configures and starts the Flask web server.
+
+    This function initializes the application, sets up the database, performs
+    an initial media scan, and starts the Flask development server.
+
+    Args:
+        argv: Command-line arguments passed to the application.
+    """
     del argv # Unused.
 
     logging.set_verbosity(logging.INFO)

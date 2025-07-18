@@ -9,7 +9,20 @@ DATABASE_NAME = "media_cache.sqlite3"
 thread_local = threading.local()
 
 def get_db_path(storage_dir: Optional[str] = None) -> str:
-    """Gets the absolute path to the database file."""
+    """
+    Constructs the absolute path to the SQLite database file.
+
+    This function determines the database path based on the provided `storage_dir`.
+    If `storage_dir` is not given, it attempts to fall back to a thread-local
+    path or the current working directory, which is not ideal for production.
+
+    Args:
+        storage_dir: The directory where the database file is stored. If None,
+                     the function will try to find a fallback path.
+
+    Returns:
+        The absolute path to the database file.
+    """
     if not storage_dir:
         # This is a fallback, ideally storage_dir is always provided
         # from the application's configuration.
@@ -27,7 +40,19 @@ def get_db_path(storage_dir: Optional[str] = None) -> str:
 
 
 def get_db_connection(db_path: str) -> sqlite3.Connection:
-    """Gets a database connection for the current thread."""
+    """
+    Establishes and returns a database connection for the current thread.
+
+    It uses a thread-local storage to ensure that each thread gets its own
+    database connection. If a connection for the current thread and database
+    path does not exist, it creates a new one.
+
+    Args:
+        db_path: The absolute path to the database file.
+
+    Returns:
+        A sqlite3.Connection object for the current thread.
+    """
     # Check if the current thread already has a connection, and if it's for the same db_path
     if not hasattr(thread_local, 'connection') or \
        not hasattr(thread_local, 'db_path_for_current_thread') or \
@@ -52,7 +77,12 @@ def get_db_connection(db_path: str) -> sqlite3.Connection:
     return thread_local.connection
 
 def close_db_connection() -> None:
-    """Closes the database connection for the current thread, if it exists."""
+    """
+    Closes the database connection for the current thread.
+
+    If a connection exists in the thread-local storage, this function will
+    close it and remove the connection attributes from the storage.
+    """
     if hasattr(thread_local, 'connection'):
         logging.info(f"Closing SQLite connection for thread {threading.get_ident()} from {getattr(thread_local, 'db_path_for_current_thread', 'N/A')}")
         thread_local.connection.close()
@@ -61,7 +91,15 @@ def close_db_connection() -> None:
             del thread_local.db_path_for_current_thread
 
 def init_db(storage_dir: str) -> None:
-    """Initializes the database and creates the media table if it doesn't exist."""
+    """
+    Initializes the database by creating the necessary tables and indexes.
+
+    This function should be called at application startup. It ensures that
+    the `media_files` table and its indexes are created if they do not exist.
+
+    Args:
+        storage_dir: The directory where the database file will be created.
+    """
     # This function will be called by the main thread typically at startup.
     # It should establish its own connection, perform setup, and close it.
     # It should not rely on a pre-existing flask_g or shared thread_local connection from elsewhere
@@ -112,6 +150,17 @@ def init_db(storage_dir: str) -> None:
 
 
 def add_or_update_media_file(db_path: str, media_data: Dict[str, Any]) -> None:
+    """
+    Adds a new media file record to the database or updates an existing one.
+
+    This function uses `INSERT OR REPLACE` to manage media file records, using
+    the SHA256 hash as the primary key. It also handles cases where a file path
+    is associated with a new SHA, deleting the old record.
+
+    Args:
+        db_path: The path to the database file.
+        media_data: A dictionary containing the media file's metadata.
+    """
     conn = get_db_connection(db_path)
     required_fields = ['sha256_hex', 'filename', 'file_path', 'last_modified']
     for field in required_fields:
@@ -144,6 +193,16 @@ def add_or_update_media_file(db_path: str, media_data: Dict[str, Any]) -> None:
         raise
 
 def get_media_file_by_sha(db_path: str, sha256_hex: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves a media file's metadata from the database by its SHA256 hash.
+
+    Args:
+        db_path: The path to the database file.
+        sha256_hex: The SHA256 hash of the media file.
+
+    Returns:
+        A dictionary containing the media file's metadata, or None if not found.
+    """
     conn = get_db_connection(db_path)
     try:
         cursor = conn.cursor()
@@ -155,6 +214,16 @@ def get_media_file_by_sha(db_path: str, sha256_hex: str) -> Optional[Dict[str, A
         return None
 
 def get_media_file_by_path(db_path: str, file_path: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves a media file's metadata from the database by its file path.
+
+    Args:
+        db_path: The path to the database file.
+        file_path: The relative path of the media file within the storage directory.
+
+    Returns:
+        A dictionary containing the media file's metadata, or None if not found.
+    """
     conn = get_db_connection(db_path)
     try:
         cursor = conn.cursor()
@@ -166,6 +235,15 @@ def get_media_file_by_path(db_path: str, file_path: str) -> Optional[Dict[str, A
         return None
 
 def get_all_media_files(db_path: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Retrieves all media file records from the database.
+
+    Args:
+        db_path: The path to the database file.
+
+    Returns:
+        A dictionary mapping SHA256 hashes to media file metadata dictionaries.
+    """
     conn = get_db_connection(db_path)
     media_dict = {}
     try:
@@ -179,6 +257,15 @@ def get_all_media_files(db_path: str) -> Dict[str, Dict[str, Any]]:
         return {}
 
 def get_all_file_paths_and_last_modified(db_path: str) -> Dict[str, float]:
+    """
+    Retrieves a mapping of all file paths to their last modified timestamps.
+
+    Args:
+        db_path: The path to the database file.
+
+    Returns:
+        A dictionary mapping file paths to their last modified timestamps.
+    """
     conn = get_db_connection(db_path)
     paths = {}
     try:
@@ -192,6 +279,16 @@ def get_all_file_paths_and_last_modified(db_path: str) -> Dict[str, float]:
         return {}
 
 def delete_media_file_by_sha(db_path: str, sha256_hex: str) -> bool:
+    """
+    Deletes a media file record from the database by its SHA256 hash.
+
+    Args:
+        db_path: The path to the database file.
+        sha256_hex: The SHA256 hash of the media file to delete.
+
+    Returns:
+        True if the record was deleted, False otherwise.
+    """
     conn = get_db_connection(db_path)
     try:
         with conn:
@@ -203,6 +300,16 @@ def delete_media_file_by_sha(db_path: str, sha256_hex: str) -> bool:
         return False
 
 def delete_media_file_by_path(db_path: str, file_path: str) -> bool:
+    """
+    Deletes a media file record from the database by its file path.
+
+    Args:
+        db_path: The path to the database file.
+        file_path: The relative path of the media file to delete.
+
+    Returns:
+        True if the record was deleted, False otherwise.
+    """
     conn = get_db_connection(db_path)
     try:
         with conn:
@@ -214,6 +321,16 @@ def delete_media_file_by_path(db_path: str, file_path: str) -> bool:
         return False
 
 def get_file_last_modified(db_path: str, file_path: str) -> Optional[float]:
+    """
+    Retrieves the last modified timestamp for a specific file path.
+
+    Args:
+        db_path: The path to the database file.
+        file_path: The relative path of the media file.
+
+    Returns:
+        The last modified timestamp as a float, or None if not found.
+    """
     conn = get_db_connection(db_path)
     try:
         cursor = conn.cursor()
@@ -225,6 +342,15 @@ def get_file_last_modified(db_path: str, file_path: str) -> Optional[float]:
         return None
 
 def get_all_db_file_paths(db_path: str) -> List[str]:
+    """
+    Retrieves a list of all file paths stored in the database.
+
+    Args:
+        db_path: The path to the database file.
+
+    Returns:
+        A list of all file paths.
+    """
     conn = get_db_connection(db_path)
     paths = []
     try:
@@ -238,6 +364,15 @@ def get_all_db_file_paths(db_path: str) -> List[str]:
         return []
 
 def get_all_shas_and_thumbnails(db_path: str) -> Dict[str, Optional[str]]:
+    """
+    Retrieves a mapping of all SHA256 hashes to their thumbnail file paths.
+
+    Args:
+        db_path: The path to the database file.
+
+    Returns:
+        A dictionary mapping SHA256 hashes to their thumbnail file paths.
+    """
     conn = get_db_connection(db_path)
     shas_and_thumbnails = {}
     try:
@@ -251,6 +386,17 @@ def get_all_shas_and_thumbnails(db_path: str) -> Dict[str, Optional[str]]:
         return {}
 
 def update_media_file_fields(db_path: str, sha256_hex: str, fields_to_update: Dict[str, Any]) -> bool:
+    """
+    Updates specific fields for a media file record in the database.
+
+    Args:
+        db_path: The path to the database file.
+        sha256_hex: The SHA256 hash of the media file to update.
+        fields_to_update: A dictionary of fields and their new values.
+
+    Returns:
+        True if the update was successful, False otherwise.
+    """
     if not fields_to_update:
         return False
     conn = get_db_connection(db_path)
@@ -279,6 +425,15 @@ def update_media_file_fields(db_path: str, sha256_hex: str, fields_to_update: Di
         return False
 
 def get_all_shas_in_db(db_path: str) -> List[str]:
+    """
+    Retrieves a list of all SHA256 hashes stored in the database.
+
+    Args:
+        db_path: The path to the database file.
+
+    Returns:
+        A list of all SHA256 hashes.
+    """
     conn = get_db_connection(db_path)
     shas = []
     try:

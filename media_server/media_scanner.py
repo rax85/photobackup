@@ -100,7 +100,16 @@ THUMBNAIL_SIZE = (256, 256)
 THUMBNAIL_EXTENSION = ".png"
 
 def get_file_sha256(file_path: str) -> Optional[str]:
-    """Computes the SHA256 hash of a file."""
+    """
+    Computes the SHA256 hash of a file.
+
+    Args:
+        file_path: The absolute path to the file.
+
+    Returns:
+        The SHA256 hash as a hexadecimal string, or None if the file
+        could not be read.
+    """
     sha256_hash = hashlib.sha256()
     try:
         with open(file_path, "rb") as f:
@@ -112,7 +121,15 @@ def get_file_sha256(file_path: str) -> Optional[str]:
         return None
 
 def is_media_file(file_path: str) -> bool:
-    """Checks if a file is an image or video based on its MIME type."""
+    """
+    Determines if a file is a media file based on its MIME type.
+
+    Args:
+        file_path: The path to the file.
+
+    Returns:
+        True if the file is an image or video, False otherwise.
+    """
     mime_type, _ = mimetypes.guess_type(file_path)
     if mime_type:
         return mime_type.startswith('image/') or mime_type.startswith('video/')
@@ -123,8 +140,19 @@ def generate_thumbnail(source_image_path: str,
                        sha256_hex: str,
                        target_size: Tuple[int, int] = THUMBNAIL_SIZE) -> Optional[str]:
     """
-    Generates a thumbnail for the given image.
-    Returns: Relative path to the generated thumbnail within the base thumbnail_dir (e.g., 'ab/hash.png').
+    Generates a thumbnail for a given image file.
+
+    The thumbnail is saved in a subdirectory of `thumbnail_dir` named with
+    the first two characters of the SHA256 hash.
+
+    Args:
+        source_image_path: The absolute path to the source image.
+        thumbnail_dir: The absolute path to the base directory for thumbnails.
+        sha256_hex: The SHA256 hash of the source image.
+        target_size: A tuple specifying the target width and height of the thumbnail.
+
+    Returns:
+        The relative path to the generated thumbnail, or None if generation fails.
     """
     if not sha256_hex or len(sha256_hex) < 2:
         logging.error(f"Invalid sha256_hex for thumbnail generation: {sha256_hex}")
@@ -193,14 +221,18 @@ def _delete_thumbnail_file(thumbnail_dir_abs: str, thumbnail_relative_path: Opti
 
 def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None:
     """
-    Scans a directory for media files, updating the SQLite database.
+    Scans a directory for media files and updates the database.
+
+    This function walks through the given `storage_dir`, identifies media files,
+    and updates their metadata in the SQLite database specified by `db_path`.
+    It can perform a full scan or a rescan, which checks for modifications
+    and deletions.
 
     Args:
-        storage_dir: The path to the directory to scan.
-        db_path: Path to the SQLite database file.
-        rescan: If True, performs a rescan checking for modifications and deletions.
-                If False, performs a full scan, adding new files and updating existing
-                ones if their last_modified time has changed (or if they are new).
+        storage_dir: The path to the directory to scan for media files.
+        db_path: The path to the SQLite database file.
+        rescan: If True, performs a rescan to check for modifications and
+                deletions. If False, performs a full scan.
     """
     if not os.path.isdir(storage_dir):
         logging.error(f"Storage directory not found: {storage_dir}")
