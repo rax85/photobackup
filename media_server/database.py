@@ -445,3 +445,78 @@ def get_all_shas_in_db(db_path: str) -> List[str]:
     except sqlite3.Error as e:
         logging.error(f"Database error retrieving all SHAs: {e}")
         return []
+
+def get_media_files_by_date(db_path: str, date: float) -> Dict[str, Dict[str, Any]]:
+    """
+    Retrieves media files created on a specific date.
+
+    Args:
+        db_path: The path to the database file.
+        date: The date to filter by, as a Unix timestamp.
+
+    Returns:
+        A dictionary of media files matching the date.
+    """
+    conn = get_db_connection(db_path)
+    media_dict = {}
+    try:
+        cursor = conn.cursor()
+        # Compare the date part of the timestamp
+        cursor.execute("SELECT * FROM media_files WHERE date(original_creation_date, 'unixepoch') = date(?, 'unixepoch')", (date,))
+        for row in cursor.fetchall():
+            media_dict[row['sha256_hex']] = dict(row)
+        return media_dict
+    except sqlite3.Error as e:
+        logging.error(f"Database error retrieving media files by date: {e}")
+        return {}
+
+def get_media_files_by_date_range(db_path: str, start_date: float, end_date: float) -> Dict[str, Dict[str, Any]]:
+    """
+    Retrieves media files created within a specific date range.
+
+    Args:
+        db_path: The path to the database file.
+        start_date: The start of the date range, as a Unix timestamp.
+        end_date: The end of the date range, as a Unix timestamp.
+
+    Returns:
+        A dictionary of media files within the date range.
+    """
+    conn = get_db_connection(db_path)
+    media_dict = {}
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM media_files WHERE original_creation_date BETWEEN ? AND ?", (start_date, end_date))
+        for row in cursor.fetchall():
+            media_dict[row['sha256_hex']] = dict(row)
+        return media_dict
+    except sqlite3.Error as e:
+        logging.error(f"Database error retrieving media files by date range: {e}")
+        return {}
+
+def get_media_files_by_location(db_path: str, city: str, country: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """
+    Retrieves media files from a specific location.
+
+    Args:
+        db_path: The path to the database file.
+        city: The city to filter by.
+        country: The country to filter by (optional).
+
+    Returns:
+        A dictionary of media files matching the location.
+    """
+    conn = get_db_connection(db_path)
+    media_dict = {}
+    try:
+        cursor = conn.cursor()
+        if country:
+            cursor.execute("SELECT * FROM media_files WHERE city = ? AND country = ?", (city, country))
+        else:
+            cursor.execute("SELECT * FROM media_files WHERE city = ?", (city,))
+        for row in cursor.fetchall():
+            media_dict[row['sha256_hex']] = dict(row)
+        return media_dict
+    except sqlite3.Error as e:
+        logging.error(f"Database error retrieving media files by location: {e}")
+        return {}
