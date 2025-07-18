@@ -41,6 +41,52 @@ header h1 svg {
     fill: currentColor; /* Inherit color from h1 */
 }
 
+.search-container {
+    flex-grow: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 0 2rem;
+}
+
+#searchInput {
+    width: 50%;
+    max-width: 400px;
+    padding: 0.5rem 1rem;
+    font-size: 1rem;
+    border: 1px solid #ccc;
+    border-radius: 20px;
+    outline: none;
+    transition: all 0.3s ease;
+}
+
+#searchInput:focus {
+    border-color: #007aff;
+    box-shadow: 0 0 5px rgba(0, 122, 255, 0.5);
+}
+
+.search-container button {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0.5rem;
+    margin-left: -40px;
+    outline: none;
+}
+
+.search-container button svg {
+    fill: #555;
+    transition: fill 0.3s ease;
+}
+
+.search-container button:hover svg {
+    fill: #007aff;
+}
+
+#resetButton {
+    margin-left: 10px;
+}
+
 main {
     padding: 1.5rem; /* Increased padding for main content area */
     max-width: 1200px; /* Keep max-width for overall content area */
@@ -179,6 +225,21 @@ footer {
 
 /* Responsive adjustments */
 @media (max-width: 768px) {
+    .search-container {
+        padding: 0 1rem;
+        order: 2; /* Change order to place it below the title */
+        width: 100%;
+        margin-top: 0.5rem;
+    }
+
+    #searchInput {
+        width: 100%;
+    }
+
+    header {
+        flex-wrap: wrap;
+    }
+
     header h1 {
         font-size: 1.5rem;
     }
