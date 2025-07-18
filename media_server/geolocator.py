@@ -11,6 +11,13 @@ class City:
     longitude: float
 
 class GeoLocator:
+    """
+    A singleton class for finding the nearest city to a given GPS coordinate.
+
+    This class loads a list of cities from a CSV file and provides a method
+    to find the closest city to a given latitude and longitude. It uses the
+        Haversine formula to calculate distances.
+    """
     _instance = None
     _lock = Lock()
 
@@ -22,10 +29,27 @@ class GeoLocator:
         return cls._instance
 
     def __init__(self):
+        """
+        Initializes the GeoLocator instance.
+
+        This method is called only once when the singleton instance is created.
+        It initializes the list of cities and a flag to track if the city
+        data has been loaded.
+        """
         self.cities = []
         self.loaded = False
 
     def load_cities(self, csv_file):
+        """
+        Loads city data from a CSV file into memory.
+
+        This method is thread-safe and ensures that the city data is loaded
+        only once. The CSV file should have columns for city name, latitude,
+        longitude, and country.
+
+        Args:
+            csv_file: The path to the CSV file containing city data.
+        """
         if self.loaded:
             return
         with self._lock:
@@ -46,6 +70,17 @@ class GeoLocator:
             self.loaded = True
 
     def nearest_city(self, latitude, longitude):
+        """
+        Finds the nearest city to the given latitude and longitude.
+
+        Args:
+            latitude: The latitude of the location.
+            longitude: The longitude of the location.
+
+        Returns:
+            A `City` object representing the nearest city, or None if no cities
+            are loaded.
+        """
         if not self.cities:
             return None
 
