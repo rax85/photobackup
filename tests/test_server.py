@@ -159,6 +159,64 @@ class TestServerFlaskWithDB(unittest.TestCase):
             expected_content = f.read()
         self.assertEqual(response.data, expected_content)
 
+    def test_list_media_by_date_success(self):
+        # This test assumes a known date for one of the test files.
+        # Let's update one file to have a specific date.
+        img1_creation_time = datetime(2023, 1, 15, 12, 0, 0).timestamp()
+        db_utils.update_media_file_fields(self.db_path, self.img1_sha256, {'original_creation_date': img1_creation_time})
+
+        response = self.client.get('/list/date/2023-01-15')
+        self.assertEqual(response.status_code, 200)
+        data = response.json
+        self.assertEqual(len(data), 1)
+        self.assertIn(self.img1_sha256, data)
+
+        # Test with no results
+        response = self.client.get('/list/date/2022-01-01')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json), 0)
+
+    def test_list_media_by_date_range_success(self):
+        # Dates for img1 and vid1
+        img1_creation_time = datetime(2023, 1, 15, 12, 0, 0).timestamp()
+        vid1_creation_time = datetime(2023, 1, 20, 12, 0, 0).timestamp()
+        db_utils.update_media_file_fields(self.db_path, self.img1_sha256, {'original_creation_date': img1_creation_time})
+        db_utils.update_media_file_fields(self.db_path, self.vid1_sha256, {'original_creation_date': vid1_creation_time})
+
+        # Range including both
+        response = self.client.get('/list/daterange/2023-01-15/2023-01-20')
+        self.assertEqual(response.status_code, 200)
+        data = response.json
+        self.assertEqual(len(data), 2)
+        self.assertIn(self.img1_sha256, data)
+        self.assertIn(self.vid1_sha256, data)
+
+        # Range including only one
+        response = self.client.get('/list/daterange/2023-01-14/2023-01-16')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json), 1)
+
+    def test_list_media_by_location_success(self):
+        # Update a record to have a location
+        db_utils.update_media_file_fields(self.db_path, self.img1_sha256, {'city': 'TestCity', 'country': 'TestCountry'})
+
+        # Test with city and country
+        response = self.client.get('/list/location/TestCity/TestCountry')
+        self.assertEqual(response.status_code, 200)
+        data = response.json
+        self.assertEqual(len(data), 1)
+        self.assertIn(self.img1_sha256, data)
+
+        # Test with city only
+        response = self.client.get('/list/location/TestCity')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json), 1)
+
+        # Test with no results
+        response = self.client.get('/list/location/UnknownCity')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json), 0)
+
     def test_get_image_by_sha256_endpoint_success(self):
         response = self.client.get(f'/image/sha256/{self.img1_sha256}')
         self.assertEqual(response.status_code, 200)
