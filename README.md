@@ -118,6 +118,34 @@ The server exposes the following HTTP API endpoints:
         }
         ```
 
+### `GET /list/date/<date_str>`
+*   **Description:** Retrieves media items for a specific date.
+*   **Request:**
+    *   Path Parameter: `<date_str>` in `YYYY-MM-DD` format.
+*   **Success Response:**
+    *   `200 OK`
+    *   Body (JSON): Same format as `GET /list`.
+*   **Error Responses:**
+    *   `400 Bad Request`: "Invalid date format. Please use YYYY-MM-DD."
+
+### `GET /list/daterange/<start_date_str>/<end_date_str>`
+*   **Description:** Retrieves media items within a date range.
+*   **Request:**
+    *   Path Parameters: `<start_date_str>` and `<end_date_str>` in `YYYY-MM-DD` format.
+*   **Success Response:**
+    *   `200 OK`
+    *   Body (JSON): Same format as `GET /list`.
+*   **Error Responses:**
+    *   `400 Bad Request`: "Invalid date format. Please use YYYY-MM-DD." or "Start date must be before end date."
+
+### `GET /list/location/<city>` and `GET /list/location/<city>/<country>`
+*   **Description:** Retrieves media items for a specific location.
+*   **Request:**
+    *   Path Parameters: `<city>` and optional `<country>`.
+*   **Success Response:**
+    *   `200 OK`
+    *   Body (JSON): Same format as `GET /list`.
+
 ### `PUT /image/<path:filename>`
 *   **Description:** Uploads a new image file. The `<filename>` in the URL path is a suggestion for the stored filename (it will be sanitized).
 *   **Request:**

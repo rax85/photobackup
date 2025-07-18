@@ -172,6 +172,60 @@ def list_media():
     logging.info(f"Served /list request, found {len(all_media)} items.")
     return jsonify(all_media)
 
+@app.route('/list/date/<string:date_str>', methods=['GET'])
+def list_media_by_date(date_str):
+    """
+    Lists media files for a specific date.
+    Date format should be YYYY-MM-DD.
+    """
+    try:
+        # Convert YYYY-MM-DD string to a datetime object, then to a timestamp
+        dt_obj = datetime.datetime.strptime(date_str, '%Y-%m-%d')
+        # To get a full day, we can find the start and end of the day.
+        # However, the DB function get_media_files_by_date uses date() SQL function,
+        # so passing the timestamp of the beginning of the day is sufficient.
+        timestamp = dt_obj.timestamp()
+        media_files = db_utils.get_media_files_by_date(app.config['DATABASE_PATH'], timestamp)
+        logging.info(f"Served /list/date/{date_str} request, found {len(media_files)} items.")
+        return jsonify(media_files)
+    except ValueError:
+        abort(400, description="Invalid date format. Please use YYYY-MM-DD.")
+
+@app.route('/list/daterange/<string:start_date_str>/<string:end_date_str>', methods=['GET'])
+def list_media_by_date_range(start_date_str, end_date_str):
+    """
+    Lists media files within a date range.
+    Date format should be YYYY-MM-DD.
+    """
+    try:
+        start_dt = datetime.datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_dt = datetime.datetime.strptime(end_date_str, '%Y-%m-%d')
+        # To be inclusive of the end date, set time to end of day
+        end_dt = end_dt.replace(hour=23, minute=59, second=59)
+
+        start_timestamp = start_dt.timestamp()
+        end_timestamp = end_dt.timestamp()
+
+        if start_timestamp > end_timestamp:
+            abort(400, description="Start date must be before end date.")
+
+        media_files = db_utils.get_media_files_by_date_range(app.config['DATABASE_PATH'], start_timestamp, end_timestamp)
+        logging.info(f"Served /list/daterange/ request from {start_date_str} to {end_date_str}, found {len(media_files)} items.")
+        return jsonify(media_files)
+    except ValueError:
+        abort(400, description="Invalid date format. Please use YYYY-MM-DD.")
+
+@app.route('/list/location/<string:city>', methods=['GET'])
+@app.route('/list/location/<string:city>/<string:country>', methods=['GET'])
+def list_media_by_location(city, country=None):
+    """
+    Lists media files for a specific location (city and optional country).
+    """
+    media_files = db_utils.get_media_files_by_location(app.config['DATABASE_PATH'], city, country)
+    location_str = f"{city}/{country}" if country else city
+    logging.info(f"Served /list/location/{location_str} request, found {len(media_files)} items.")
+    return jsonify(media_files)
+
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'heic', 'heif', 'mp4', 'mov', 'avi'}
 
 def allowed_file(filename):
