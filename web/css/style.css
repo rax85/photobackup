@@ -478,6 +478,133 @@ footer {
     height: 24px; /* Ensure SVG is 24px */
 }
 
+/* Settings Button FAB Styles */
+.settings-btn {
+    position: fixed;
+    bottom: 88px; /* 20px (bottom) + 56px (upload btn height) + 12px (gap) */
+    right: 20px;
+    width: 56px;
+    height: 56px;
+    background-color: #6c757d; /* A neutral grey */
+    color: white;
+    border: none;
+    border-radius: 50%;
+    padding: 16px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2), 0 2px 4px rgba(0,0,0,0.15);
+    transition: background-color 0.2s ease-in-out, transform 0.1s ease-in-out, box-shadow 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1050;
+}
+
+.settings-btn:hover {
+    background-color: #5a6268;
+    box-shadow: 0 6px 16px rgba(0,0,0,0.25), 0 3px 6px rgba(0,0,0,0.2);
+}
+
+.settings-btn:active {
+    background-color: #495057;
+    transform: scale(0.95);
+}
+
+.settings-btn svg {
+    fill: currentColor;
+    width: 24px;
+    height: 24px;
+}
+
+/* Settings Overlay Styles */
+.settings-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 2000;
+}
+
+.settings-dialog {
+    background-color: #fff;
+    padding: 2rem;
+    border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    width: 90%;
+    max-width: 500px;
+}
+
+.settings-dialog h2 {
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+    color: #333;
+}
+
+.settings-dialog form {
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-dialog label {
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    color: #555;
+}
+
+.settings-dialog input[type="text"],
+.settings-dialog input[type="number"],
+.settings-dialog select {
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 1rem;
+}
+
+.settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.settings-actions button {
+    padding: 0.75rem 1.5rem;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+#saveSettings {
+    background-color: #007aff;
+    color: white;
+}
+
+#saveSettings:disabled {
+    background-color: #a0a0a0;
+    cursor: not-allowed;
+}
+
+#cancelSettings {
+    background-color: #e0e0e0;
+    color: #333;
+}
+
+.settings-error {
+    background-color: #f8d7da;
+    color: #721c24;
+    padding: 1rem;
+    border: 1px solid #f5c6cb;
+    border-radius: 4px;
+    margin-bottom: 1rem;
+}
+
 /* Upload Progress Overlay Styles */
 .upload-overlay {
     position: fixed;
