@@ -16,6 +16,7 @@ from media_server.server import app as flask_app
 from media_server import media_scanner
 from media_server import database as db_utils
 from media_server import server as media_server_module
+from media_server import settings as settings_utils
 from PIL import Image
 
 def create_dummy_file(dir_path, filename, content="dummy content", mtime=None, image_details=None):
@@ -60,6 +61,10 @@ class TestServerFlaskWithDB(unittest.TestCase):
         os.makedirs(flask_app.config['THUMBNAIL_DIR'], exist_ok=True)
 
         media_server_module.FLAGS.rescan_interval = 0
+
+        media_server_module.settings_manager = settings_utils.SettingsManager(
+            os.path.join(cls.test_dir, 'settings.json')
+        )
 
         db_utils.init_db(cls.test_dir) # This will init the DB at cls.db_path
 
@@ -158,6 +163,35 @@ class TestServerFlaskWithDB(unittest.TestCase):
         with open(self.img1_path, "rb") as f:
             expected_content = f.read()
         self.assertEqual(response.data, expected_content)
+
+    def test_get_settings(self):
+        response = self.client.get('/api/settings')
+        self.assertEqual(response.status_code, 200)
+        settings = response.json
+        self.assertEqual(settings['rescan_interval'], 600)
+        self.assertEqual(settings['tagging_model'], "Off")
+
+    def test_put_settings(self):
+        new_settings = {
+            "rescan_interval": 1200,
+            "tagging_model": "Resnet",
+            "archival_backend": "AWS",
+            "archival_bucket": "my-test-bucket"
+        }
+        response = self.client.put('/api/settings', json=new_settings)
+        self.assertEqual(response.status_code, 200)
+        updated_settings = response.json
+        self.assertEqual(updated_settings, new_settings)
+
+        # Verify that the settings were actually updated
+        response = self.client.get('/api/settings')
+        self.assertEqual(response.status_code, 200)
+        settings = response.json
+        self.assertEqual(settings, new_settings)
+
+    def test_put_settings_invalid_format(self):
+        response = self.client.put('/api/settings', json={"invalid_field": "value"})
+        self.assertEqual(response.status_code, 400)
 
     def test_list_media_by_date_success(self):
         # This test assumes a known date for one of the test files.
