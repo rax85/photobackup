@@ -169,13 +169,41 @@ document.addEventListener('DOMContentLoaded', () => {
             initialZoomLevel: 'fit', // Ensure images fit within the viewport, maintaining aspect ratio
         });
 
-        // The 'custom-caption' element that displayed "Caption text" has been removed.
-        // PhotoSwipe can display captions if the 'alt' attribute of the thumbnail image (<img>)
-        // is populated, or if a 'title' is provided in a dataSource.
-        // The current code sets img.alt = item.filename || 'Media thumbnail';
-        // which PhotoSwipe might use by default if its caption module is active.
-        // If captions are desired, ensure item.filename is suitable or explore
-        // PhotoSwipe's dedicated caption options further.
+        lightbox.on('uiRegister', function() {
+            lightbox.pswp.ui.registerElement({
+                name: 'custom-caption',
+                order: 9,
+                isButton: false,
+                appendTo: 'root',
+                html: 'Caption text',
+                onInit: (el, pswp) => {
+                    pswp.on('change', () => {
+                        const currSlideElement = pswp.currSlide.data.element;
+                        if (!currSlideElement) {
+                            el.innerHTML = '';
+                            return;
+                        }
+
+                        const sha256 = currSlideElement.href.split('/').pop();
+                        const item = mediaItems.find(m => m.sha256 === sha256);
+
+                        if (item) {
+                            let captionHTML = '';
+                            if (item.original_creation_date) {
+                                const date = new Date(item.original_creation_date * 1000);
+                                captionHTML += `<div class="pswp-caption-date">${date.toLocaleDateString()}</div>`;
+                            }
+                            if (item.city) {
+                                captionHTML += `<div class="pswp-caption-location">${item.city}</div>`;
+                            }
+                            el.innerHTML = captionHTML;
+                        } else {
+                            el.innerHTML = '';
+                        }
+                    });
+                }
+            });
+        });
 
         lightbox.init();
         console.log("PhotoSwipe Lightbox initialized:", lightbox); // Basic check 1
