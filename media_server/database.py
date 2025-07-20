@@ -511,9 +511,9 @@ def get_media_files_by_location(db_path: str, city: str, country: Optional[str] 
     try:
         cursor = conn.cursor()
         if country:
-            cursor.execute("SELECT * FROM media_files WHERE city = ? AND country = ?", (city, country))
+            cursor.execute("SELECT * FROM media_files WHERE LOWER(city) = LOWER(?) AND LOWER(country) = LOWER(?)", (city, country))
         else:
-            cursor.execute("SELECT * FROM media_files WHERE city = ?", (city,))
+            cursor.execute("SELECT * FROM media_files WHERE LOWER(city) = LOWER(?)", (city,))
         for row in cursor.fetchall():
             media_dict[row['sha256_hex']] = dict(row)
         return media_dict

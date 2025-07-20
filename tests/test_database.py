@@ -100,5 +100,16 @@ class TestDataFiltering(unittest.TestCase):
         results = db_utils.get_media_files_by_location(self.db_path, 'Paris')
         self.assertEqual(len(results), 0)
 
+    def test_get_media_files_by_location_case_insensitive(self):
+        # Test for a city with different case
+        results = db_utils.get_media_files_by_location(self.db_path, 'new york')
+        self.assertEqual(len(results), 2)
+        self.assertIn('hash1', results)
+        self.assertIn('hash3', results)
+
+        # Test for a city and country with different case
+        results = db_utils.get_media_files_by_location(self.db_path, 'new york', 'usa')
+        self.assertEqual(len(results), 2)
+
 if __name__ == '__main__':
     unittest.main()
