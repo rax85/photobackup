@@ -536,4 +536,65 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
     }
+
+    // Settings functionality
+    const settingsButton = document.getElementById('settingsButton');
+    const settingsOverlay = document.getElementById('settingsOverlay');
+    const settingsForm = document.getElementById('settingsForm');
+    const cancelSettingsButton = document.getElementById('cancelSettings');
+    const settingsError = document.getElementById('settingsError');
+
+    if (settingsButton && settingsOverlay && settingsForm && cancelSettingsButton) {
+        settingsButton.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/settings');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const settings = await response.json();
+                document.getElementById('rescanInterval').value = settings.rescan_interval;
+                document.getElementById('taggingModel').value = settings.tagging_model;
+                document.getElementById('archivalBackend').value = settings.archival_backend;
+                document.getElementById('archivalBucket').value = settings.archival_bucket;
+                settingsOverlay.style.display = 'flex';
+            } catch (error) {
+                console.error('Error fetching settings:', error);
+                alert('Could not load settings. Please try again later.');
+            }
+        });
+
+        cancelSettingsButton.addEventListener('click', () => {
+            settingsOverlay.style.display = 'none';
+            settingsError.style.display = 'none';
+        });
+
+        settingsForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const formData = new FormData(settingsForm);
+            const settings = Object.fromEntries(formData.entries());
+            settings.rescan_interval = parseInt(settings.rescan_interval, 10);
+
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(settings),
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.description || `HTTP error! status: ${response.status}`);
+                }
+
+                settingsOverlay.style.display = 'none';
+                settingsError.style.display = 'none';
+            } catch (error) {
+                console.error('Error saving settings:', error);
+                settingsError.textContent = `Error: ${error.message}`;
+                settingsError.style.display = 'block';
+            }
+        });
+    }
 });
