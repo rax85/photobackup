@@ -8,6 +8,7 @@ if __name__ == '__main__' and __package__ is None:
     if PROJECT_ROOT_FOR_SERVER not in sys.path:
         sys.path.insert(0, PROJECT_ROOT_FOR_SERVER)
 
+import dataclasses
 import threading
 import time
 import datetime
@@ -25,9 +26,11 @@ from flask import Flask, jsonify, abort, send_from_directory
 try:
     from . import media_scanner
     from . import database as db_utils
+    from . import settings as settings_utils
 except ImportError:
     from media_server import media_scanner # Fallback for direct execution
     from media_server import database as db_utils
+    from media_server import settings as settings_utils
 
 
 FLAGS = flags.FLAGS
@@ -425,6 +428,31 @@ def get_image(sha256_hex):
         abort(404, description="Image file not found on disk (DB out of sync?).")
 
 
+settings_manager: settings_utils.SettingsManager = None
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings():
+    """
+    Returns the current application settings.
+    """
+    return jsonify(dataclasses.asdict(settings_manager.get()))
+
+@app.route('/api/settings', methods=['PUT'])
+def put_settings():
+    """
+    Updates the application settings.
+    """
+    if not request.json:
+        abort(400, description="Request body must be a JSON object.")
+
+    try:
+        new_settings = settings_utils.Settings(**request.json)
+        settings_manager.write_settings(new_settings)
+        return jsonify(dataclasses.asdict(new_settings))
+    except (TypeError, ValueError) as e:
+        abort(400, description=f"Invalid settings format: {e}")
+
+
 @app.route('/thumbnail/<string:sha256_hex>', methods=['GET'])
 def get_thumbnail(sha256_hex):
     """
@@ -507,6 +535,10 @@ def run_flask_app(argv):
     logging.info(f"Storage directory: {app.config['STORAGE_DIR']}")
     logging.info(f"Thumbnail directory: {app.config['THUMBNAIL_DIR']}")
     logging.info(f"Database path: {app.config['DATABASE_PATH']}")
+
+    global settings_manager
+    settings_manager = settings_utils.SettingsManager(os.path.join(storage_dir, 'settings.json'))
+
 
     # Initialize DB (create tables if not exist)
     # This init_db is for the main thread. It will use its own connection.

@@ -199,6 +199,38 @@ The server exposes the following HTTP API endpoints:
 *   **Description:** Alias for `GET /image/<string:sha256_hex>`. Serves an image based on its SHA256 hash.
 *   **Details:** Same request, success, and error responses as `GET /image/<string:sha256_hex>`.
 
+### `GET /api/settings`
+*   **Description:** Retrieves the current application settings.
+*   **Request:** None.
+*   **Success Response:**
+    *   `200 OK`
+    *   Body (JSON): An object containing the current settings:
+        ```json
+        {
+          "rescan_interval": 600,
+          "tagging_model": "Off",
+          "archival_backend": "Off",
+          "archival_bucket": ""
+        }
+        ```
+
+### `PUT /api/settings`
+*   **Description:** Updates the application settings.
+*   **Request:**
+    *   Method: `PUT`
+    *   Body: A JSON object with the settings to update.
+        ```json
+        {
+          "rescan_interval": 1200,
+          "tagging_model": "Resnet"
+        }
+        ```
+*   **Success Response (200 OK):**
+    *   `200 OK`
+    *   Body (JSON): The updated settings object.
+*   **Error Responses:**
+    *   `400 Bad Request`: If the request body is not a valid JSON object or if the settings format is invalid.
+
 ### `GET /thumbnail/<string:sha256_hex>`
 *   **Description:** Serves a generated thumbnail (PNG format) for the image specified by its SHA256 hash.
 *   **Request:**
