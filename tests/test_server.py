@@ -8,6 +8,7 @@ from unittest import mock
 import io
 import hashlib
 from datetime import datetime
+import threading
 
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -16,6 +17,7 @@ from media_server.server import app as flask_app
 from media_server import media_scanner
 from media_server import database as db_utils
 from media_server import server as media_server_module
+from media_server import settings as settings_utils
 from PIL import Image
 
 def create_dummy_file(dir_path, filename, content="dummy content", mtime=None, image_details=None):
@@ -59,7 +61,9 @@ class TestServerFlaskWithDB(unittest.TestCase):
         flask_app.config['THUMBNAIL_DIR'] = os.path.join(cls.test_dir, media_scanner.THUMBNAIL_DIR_NAME)
         os.makedirs(flask_app.config['THUMBNAIL_DIR'], exist_ok=True)
 
-        media_server_module.FLAGS.rescan_interval = 0
+        media_server_module.settings_manager = settings_utils.SettingsManager(
+            os.path.join(cls.test_dir, 'settings.json')
+        )
 
         db_utils.init_db(cls.test_dir) # This will init the DB at cls.db_path
 
@@ -159,6 +163,35 @@ class TestServerFlaskWithDB(unittest.TestCase):
             expected_content = f.read()
         self.assertEqual(response.data, expected_content)
 
+    def test_get_settings(self):
+        response = self.client.get('/api/settings')
+        self.assertEqual(response.status_code, 200)
+        settings = response.json
+        self.assertEqual(settings['rescan_interval'], 600)
+        self.assertEqual(settings['tagging_model'], "Off")
+
+    def test_put_settings(self):
+        new_settings = {
+            "rescan_interval": 1200,
+            "tagging_model": "Resnet",
+            "archival_backend": "AWS",
+            "archival_bucket": "my-test-bucket"
+        }
+        response = self.client.put('/api/settings', json=new_settings)
+        self.assertEqual(response.status_code, 200)
+        updated_settings = response.json
+        self.assertEqual(updated_settings, new_settings)
+
+        # Verify that the settings were actually updated
+        response = self.client.get('/api/settings')
+        self.assertEqual(response.status_code, 200)
+        settings = response.json
+        self.assertEqual(settings, new_settings)
+
+    def test_put_settings_invalid_format(self):
+        response = self.client.put('/api/settings', json={"invalid_field": "value"})
+        self.assertEqual(response.status_code, 400)
+
     def test_list_media_by_date_success(self):
         # This test assumes a known date for one of the test files.
         # Let's update one file to have a specific date.
@@ -224,68 +257,72 @@ class TestServerFlaskWithDB(unittest.TestCase):
             expected_content = f.read()
         self.assertEqual(response.data, expected_content)
 
-# Minimal background scanning test due to complexity of thread management in tests
-class TestServerBackgroundScanMinimal(unittest.TestCase):
+class TestServerBackgroundScan(unittest.TestCase):
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp(prefix="media_bg_scan_minimal_")
+        self.test_dir = tempfile.mkdtemp(prefix="media_bg_scan_")
         self.db_path = os.path.join(self.test_dir, "bg_scan_test.sqlite3")
 
-        # Configure Flask app for this test context
         self.app_context = flask_app.app_context()
-        self.app_context.push() # Push an app context for config access
+        self.app_context.push()
 
         flask_app.config['STORAGE_DIR'] = self.test_dir
         flask_app.config['DATABASE_PATH'] = self.db_path
         flask_app.config['THUMBNAIL_DIR'] = os.path.join(self.test_dir, media_scanner.THUMBNAIL_DIR_NAME)
         os.makedirs(flask_app.config['THUMBNAIL_DIR'], exist_ok=True)
-        flask_app.config['RESCAN_INTERVAL'] = 0.01 # Very short for test
 
         db_utils.init_db(self.test_dir)
 
+        self.settings_file = os.path.join(self.test_dir, 'settings.json')
+        self.settings_manager = settings_utils.SettingsManager(self.settings_file)
+        media_server_module.settings_manager = self.settings_manager
+
+        self.client = flask_app.test_client()
+
     def tearDown(self):
         db_utils.close_db_connection()
-        if os.path.exists(self.db_path):
-            os.remove(self.db_path)
         shutil.rmtree(self.test_dir)
         self.app_context.pop()
 
-
+    @mock.patch('media_server.server.scanner_wakeup_event.wait')
     @mock.patch('media_server.server.media_scanner.scan_directory')
-    def test_background_scanner_task_calls_scan_directory(self, mock_scan_directory):
-        # This test only verifies that the background task attempts to call scan_directory.
-        # It does not test the full threaded execution, which is more complex.
+    def test_scanner_wakes_up_on_interval_change(self, mock_scan_directory, mock_event_wait):
+        self.settings_manager.write_settings(settings_utils.Settings(rescan_interval=0))
 
-        # Simulate the background scanner task being run once
-        # The background_scanner_task itself has an infinite loop, so we can't call it directly.
-        # Instead, we check if the setup for the thread is correct and if it would call scan_directory.
+        # Event to signal that the scanner has started and is waiting
+        scanner_waiting_event = threading.Event()
+        def wait_side_effect(timeout=None):
+            scanner_waiting_event.set()
+        mock_event_wait.side_effect = wait_side_effect
 
-        # For this test, we'll assume the thread is started and we want to see if one cycle works.
-        # We can't directly test the thread's execution easily in unit tests without complex async/threading mocks.
-        # A simpler check is that if rescan_interval > 0, the thread target is set correctly.
-        # To test one cycle:
-        # We'd need to refactor background_scanner_task or have a helper that runs one iteration.
-        # For now, this mock test serves as a placeholder for verifying the call.
+        scanner_thread = threading.Thread(
+            target=media_server_module.background_scanner_task,
+            args=(flask_app.app_context(), self.settings_manager),
+            daemon=True
+        )
+        scanner_thread.start()
 
-        # To simulate one cycle of the logic inside the loop of background_scanner_task:
-        # media_server_module.background_scanner_task_logic_once(flask_app.config) # Assuming such refactor
-        # This requires refactoring server.py to extract the loop body.
+        # Wait for the scanner to be in the waiting state
+        self.assertTrue(scanner_waiting_event.wait(timeout=5))
 
-        # Given the current structure, we'll test that scan_directory is called by the scanner.
-        # This requires starting the thread and waiting, which is more of an integration test.
-        # For a unit test, we can mock the time.sleep and check the call.
+        # Now, update the settings, which should trigger the event
+        new_settings = {
+            "rescan_interval": 120,
+            "tagging_model": "Off",
+            "archival_backend": "Off",
+            "archival_bucket": ""
+        }
+        response = self.client.put('/api/settings', json=new_settings)
+        self.assertEqual(response.status_code, 200)
 
-        # Simplified: Assume the task runs.
-        # The actual thread won't run in this unit test's main flow without explicit start & join.
-        # This mock test is more about the call pattern if the thread *were* running.
+        # The thread should have been woken up and called scan_directory
+        # We'll give it a moment to run
+        time.sleep(0.1)
+        mock_scan_directory.assert_called()
 
-        # If we were to run a single iteration of the background task's loop logic:
-        # media_scanner.scan_directory(flask_app.config['STORAGE_DIR'], flask_app.config['DATABASE_PATH'], rescan=True)
-        # mock_scan_directory.assert_called_with(flask_app.config['STORAGE_DIR'], flask_app.config['DATABASE_PATH'], rescan=True)
-
-        # This test is limited by the difficulty of testing threads.
-        # We can assume that if FLAGS.rescan_interval > 0, the thread would be started.
-        # The actual call test would be more involved.
-        self.assertTrue(True, "Placeholder for more complex background thread testing.")
+        # Clean up
+        self.settings_manager.write_settings(settings_utils.Settings(rescan_interval=0))
+        media_server_module.scanner_wakeup_event.set() # Wake up the thread to allow it to exit
+        scanner_thread.join(timeout=1)
 
 
 if __name__ == '__main__':

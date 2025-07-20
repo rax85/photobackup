@@ -8,6 +8,7 @@ if __name__ == '__main__' and __package__ is None:
     if PROJECT_ROOT_FOR_SERVER not in sys.path:
         sys.path.insert(0, PROJECT_ROOT_FOR_SERVER)
 
+import dataclasses
 import threading
 import time
 import datetime
@@ -25,9 +26,11 @@ from flask import Flask, jsonify, abort, send_from_directory
 try:
     from . import media_scanner
     from . import database as db_utils
+    from . import settings as settings_utils
 except ImportError:
     from media_server import media_scanner # Fallback for direct execution
     from media_server import database as db_utils
+    from media_server import settings as settings_utils
 
 
 FLAGS = flags.FLAGS
@@ -36,7 +39,6 @@ FLAGS = flags.FLAGS
 try:
     flags.DEFINE_string('storage_dir', None, 'Directory to scan for media files.')
     flags.DEFINE_integer('port', 8000, 'Port for the HTTP server.')
-    flags.DEFINE_integer('rescan_interval', 0, 'Interval in seconds for background rescanning. 0 to disable.')
     flags.DEFINE_string('db_name', db_utils.DATABASE_NAME, 'Name of the SQLite database file.')
     if __name__ == "__main__": # Mark as required only if this script is the entry point
         flags.mark_flag_as_required('storage_dir')
@@ -98,7 +100,9 @@ def close_db(error):
         delattr(flask_g, 'sqlite_db') # Remove from flask_g
 
 # --- Background Scanner ---
-def background_scanner_task(app_context):
+scanner_wakeup_event = threading.Event()
+
+def background_scanner_task(app_context, settings_manager_instance: settings_utils.SettingsManager):
     """
     A background task that periodically rescans the storage directory.
 
@@ -107,30 +111,35 @@ def background_scanner_task(app_context):
 
     Args:
         app_context: The Flask application context.
+        settings_manager_instance: An instance of the SettingsManager.
     """
     # Background thread needs to manage its own DB connection via db_utils.thread_local
     # It doesn't use flask_g.
     # The app_context is passed to allow the thread to configure logging or other app settings if needed
     # but primarily for accessing app.config values like STORAGE_DIR and DATABASE_PATH.
 
-    # Wait a moment for the main server to potentially start up and log its messages.
-    time.sleep(5)
-
     with app_context: # Use the app context for config access
         storage_dir = app.config.get('STORAGE_DIR')
         db_path = app.config.get('DATABASE_PATH') # Get the configured DB path
-        rescan_interval = app.config.get('RESCAN_INTERVAL')
 
-        if not storage_dir or not db_path or rescan_interval <= 0:
-            logging.error("Background scanner cannot start: storage_dir, db_path, or rescan_interval not configured properly.")
+        if not storage_dir or not db_path:
+            logging.error("Background scanner cannot start: storage_dir or db_path not configured properly.")
             return
 
-        logging.info(f"Background scanner started. Rescan interval: {rescan_interval} seconds for dir: {storage_dir}, DB: {db_path}")
+        logging.info(f"Background scanner started for dir: {storage_dir}, DB: {db_path}")
         while True:
+            rescan_interval = settings_manager_instance.get().rescan_interval
+            if rescan_interval <= 0:
+                logging.info("Rescanning is disabled, scanner will sleep until settings change.")
+                scanner_wakeup_event.wait() # Wait indefinitely until event is set
+                scanner_wakeup_event.clear() # Clear the event after waking up
+                logging.info("Scanner woken up by settings change.")
+                continue
+
             try:
                 # The db_utils.get_db_connection() called by media_scanner will use thread_local
                 # to get/create a connection for this background thread.
-                logging.info("Background scanner performing rescan...")
+                logging.info(f"Background scanner performing rescan... (Interval: {rescan_interval}s)")
                 media_scanner.scan_directory(storage_dir, db_path, rescan=True)
                 logging.info("Background rescan complete.")
             except Exception as e:
@@ -138,7 +147,13 @@ def background_scanner_task(app_context):
             finally:
                 # Ensure connection for this thread is closed after each scan cycle
                 db_utils.close_db_connection()
-            time.sleep(rescan_interval)
+
+            # Fetch interval again in case it was changed during the scan
+            current_interval = settings_manager_instance.get().rescan_interval
+            if current_interval > 0:
+                logging.debug(f"Scanner sleeping for {current_interval} seconds.")
+                scanner_wakeup_event.wait(timeout=current_interval)
+                scanner_wakeup_event.clear()
 
 
 # --- Flask Routes ---
@@ -425,6 +440,37 @@ def get_image(sha256_hex):
         abort(404, description="Image file not found on disk (DB out of sync?).")
 
 
+settings_manager: settings_utils.SettingsManager = None
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings():
+    """
+    Returns the current application settings.
+    """
+    return jsonify(dataclasses.asdict(settings_manager.get()))
+
+@app.route('/api/settings', methods=['PUT'])
+def put_settings():
+    """
+    Updates the application settings.
+    """
+    if not request.json:
+        abort(400, description="Request body must be a JSON object.")
+
+    try:
+        current_settings = settings_manager.get()
+        new_settings = settings_utils.Settings(**request.json)
+        settings_manager.write_settings(new_settings)
+
+        if current_settings.rescan_interval <= 0 and new_settings.rescan_interval > 0:
+            logging.info("Rescan interval changed from disabled to enabled, waking up scanner.")
+            scanner_wakeup_event.set()
+
+        return jsonify(dataclasses.asdict(new_settings))
+    except (TypeError, ValueError) as e:
+        abort(400, description=f"Invalid settings format: {e}")
+
+
 @app.route('/thumbnail/<string:sha256_hex>', methods=['GET'])
 def get_thumbnail(sha256_hex):
     """
@@ -502,11 +548,14 @@ def run_flask_app(argv):
     # Database path configuration
     # db_utils.get_db_path will use this name inside storage_dir
     app.config['DATABASE_PATH'] = db_utils.get_db_path(storage_dir) # FLAGS.db_name is just the filename
-    app.config['RESCAN_INTERVAL'] = FLAGS.rescan_interval
 
     logging.info(f"Storage directory: {app.config['STORAGE_DIR']}")
     logging.info(f"Thumbnail directory: {app.config['THUMBNAIL_DIR']}")
     logging.info(f"Database path: {app.config['DATABASE_PATH']}")
+
+    global settings_manager
+    settings_manager = settings_utils.SettingsManager(os.path.join(storage_dir, 'settings.json'))
+
 
     # Initialize DB (create tables if not exist)
     # This init_db is for the main thread. It will use its own connection.
@@ -532,12 +581,14 @@ def run_flask_app(argv):
     logging.info(f"Initial scan complete. Database contains {num_items_in_db} items.")
     db_utils.close_db_connection() # Close again, just in case get_all_media_files opened one.
 
-    if FLAGS.rescan_interval > 0:
-        # Pass the current app's context to the thread if needed for config
-        scanner_thread = threading.Thread(target=background_scanner_task, args=(app.app_context(),), daemon=True)
-        scanner_thread.start()
-    else:
-        logging.info("Background rescanning disabled.")
+    # The background scanner will start and then manage its own loop and sleep interval
+    # based on the settings. It no longer depends on a startup flag to be enabled.
+    scanner_thread = threading.Thread(
+        target=background_scanner_task,
+        args=(app.app_context(), settings_manager),
+        daemon=True
+    )
+    scanner_thread.start()
 
     logging.info(f"Starting Flask HTTP server on port {FLAGS.port}...")
     app.run(host='0.0.0.0', port=FLAGS.port, debug=False, use_reloader=False)
