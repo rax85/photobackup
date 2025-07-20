@@ -8,6 +8,7 @@ from unittest import mock
 import io
 import hashlib
 from datetime import datetime
+import threading
 
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -59,8 +60,6 @@ class TestServerFlaskWithDB(unittest.TestCase):
 
         flask_app.config['THUMBNAIL_DIR'] = os.path.join(cls.test_dir, media_scanner.THUMBNAIL_DIR_NAME)
         os.makedirs(flask_app.config['THUMBNAIL_DIR'], exist_ok=True)
-
-        media_server_module.FLAGS.rescan_interval = 0
 
         media_server_module.settings_manager = settings_utils.SettingsManager(
             os.path.join(cls.test_dir, 'settings.json')
@@ -258,68 +257,41 @@ class TestServerFlaskWithDB(unittest.TestCase):
             expected_content = f.read()
         self.assertEqual(response.data, expected_content)
 
-# Minimal background scanning test due to complexity of thread management in tests
-class TestServerBackgroundScanMinimal(unittest.TestCase):
+class TestServerBackgroundScan(unittest.TestCase):
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp(prefix="media_bg_scan_minimal_")
+        self.test_dir = tempfile.mkdtemp(prefix="media_bg_scan_")
         self.db_path = os.path.join(self.test_dir, "bg_scan_test.sqlite3")
 
-        # Configure Flask app for this test context
         self.app_context = flask_app.app_context()
-        self.app_context.push() # Push an app context for config access
+        self.app_context.push()
 
         flask_app.config['STORAGE_DIR'] = self.test_dir
         flask_app.config['DATABASE_PATH'] = self.db_path
         flask_app.config['THUMBNAIL_DIR'] = os.path.join(self.test_dir, media_scanner.THUMBNAIL_DIR_NAME)
         os.makedirs(flask_app.config['THUMBNAIL_DIR'], exist_ok=True)
-        flask_app.config['RESCAN_INTERVAL'] = 0.01 # Very short for test
 
         db_utils.init_db(self.test_dir)
 
+        self.settings_file = os.path.join(self.test_dir, 'settings.json')
+        self.settings_manager = settings_utils.SettingsManager(self.settings_file)
+        media_server_module.settings_manager = self.settings_manager
+
     def tearDown(self):
         db_utils.close_db_connection()
-        if os.path.exists(self.db_path):
-            os.remove(self.db_path)
         shutil.rmtree(self.test_dir)
         self.app_context.pop()
 
-
+    @mock.patch('media_server.server.time.sleep', side_effect=InterruptedError)
     @mock.patch('media_server.server.media_scanner.scan_directory')
-    def test_background_scanner_task_calls_scan_directory(self, mock_scan_directory):
-        # This test only verifies that the background task attempts to call scan_directory.
-        # It does not test the full threaded execution, which is more complex.
+    def test_background_scanner_task_uses_settings_interval(self, mock_scan_directory, mock_sleep):
+        test_interval = 123
+        self.settings_manager.write_settings(settings_utils.Settings(rescan_interval=test_interval))
 
-        # Simulate the background scanner task being run once
-        # The background_scanner_task itself has an infinite loop, so we can't call it directly.
-        # Instead, we check if the setup for the thread is correct and if it would call scan_directory.
+        with self.assertRaises(InterruptedError):
+            media_server_module.background_scanner_task(flask_app.app_context(), self.settings_manager)
 
-        # For this test, we'll assume the thread is started and we want to see if one cycle works.
-        # We can't directly test the thread's execution easily in unit tests without complex async/threading mocks.
-        # A simpler check is that if rescan_interval > 0, the thread target is set correctly.
-        # To test one cycle:
-        # We'd need to refactor background_scanner_task or have a helper that runs one iteration.
-        # For now, this mock test serves as a placeholder for verifying the call.
-
-        # To simulate one cycle of the logic inside the loop of background_scanner_task:
-        # media_server_module.background_scanner_task_logic_once(flask_app.config) # Assuming such refactor
-        # This requires refactoring server.py to extract the loop body.
-
-        # Given the current structure, we'll test that scan_directory is called by the scanner.
-        # This requires starting the thread and waiting, which is more of an integration test.
-        # For a unit test, we can mock the time.sleep and check the call.
-
-        # Simplified: Assume the task runs.
-        # The actual thread won't run in this unit test's main flow without explicit start & join.
-        # This mock test is more about the call pattern if the thread *were* running.
-
-        # If we were to run a single iteration of the background task's loop logic:
-        # media_scanner.scan_directory(flask_app.config['STORAGE_DIR'], flask_app.config['DATABASE_PATH'], rescan=True)
-        # mock_scan_directory.assert_called_with(flask_app.config['STORAGE_DIR'], flask_app.config['DATABASE_PATH'], rescan=True)
-
-        # This test is limited by the difficulty of testing threads.
-        # We can assume that if FLAGS.rescan_interval > 0, the thread would be started.
-        # The actual call test would be more involved.
-        self.assertTrue(True, "Placeholder for more complex background thread testing.")
+        mock_scan_directory.assert_called_once_with(self.test_dir, self.db_path, rescan=True)
+        mock_sleep.assert_any_call(test_interval)
 
 
 if __name__ == '__main__':
