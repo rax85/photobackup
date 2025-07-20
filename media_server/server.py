@@ -361,13 +361,23 @@ def put_image(filename): # filename comes from the <path:filename> URL part
                 image_width, image_height = img.size
                 exif_data = img.getexif()
                 if exif_data:
-                    date_tag = 36867 # DateTimeOriginal
-                    if date_tag in exif_data:
-                        exif_date_str = exif_data[date_tag]
+                    # Prefer DateTimeOriginal (36867), fallback to DateTime (306)
+                    date_time_original_tag = 36867
+                    date_time_tag = 306
+
+                    exif_date_str = None
+                    if date_time_original_tag in exif_data:
+                        exif_date_str = exif_data[date_time_original_tag]
+                    elif date_time_tag in exif_data:
+                        exif_date_str = exif_data[date_time_tag]
+
+                    if exif_date_str:
                         try:
                             dt_obj = datetime.datetime.strptime(exif_date_str, '%Y:%m:%d %H:%M:%S')
                             original_creation_date = dt_obj.timestamp()
-                        except (ValueError, TypeError): pass # Ignore malformed
+                        except (ValueError, TypeError):
+                            logging.warning(f"Malformed EXIF date string '{exif_date_str}' in uploaded file.")
+
                     lat, lon = media_scanner._get_gps_coordinates_from_exif(exif_data)
                     if lat is not None: latitude = lat
                     if lon is not None: longitude = lon

@@ -437,14 +437,23 @@ def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: s
                     image_width, image_height = img.size
                     exif_data = img.getexif()
                     if exif_data:
-                        date_time_original_tag = 36867 # DateTimeOriginal
+                        # Prefer DateTimeOriginal (36867), fallback to DateTime (306)
+                        date_time_original_tag = 36867
+                        date_time_tag = 306
+
+                        exif_date_str = None
                         if date_time_original_tag in exif_data:
                             exif_date_str = exif_data[date_time_original_tag]
+                        elif date_time_tag in exif_data:
+                            exif_date_str = exif_data[date_time_tag]
+
+                        if exif_date_str:
                             try:
                                 dt_object = datetime.strptime(exif_date_str, '%Y:%m:%d %H:%M:%S')
                                 original_creation_date = dt_object.timestamp()
                             except (ValueError, TypeError):
-                                logging.warning(f"Malformed DateTimeOriginal '{exif_date_str}' in {abs_file_path}.")
+                                logging.warning(f"Malformed EXIF date string '{exif_date_str}' in {abs_file_path}.")
+
                         parsed_lat, parsed_lon = _get_gps_coordinates_from_exif(exif_data)
                         if parsed_lat is not None: latitude = parsed_lat
                         if parsed_lon is not None: longitude = parsed_lon
