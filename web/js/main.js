@@ -543,8 +543,22 @@ document.addEventListener('DOMContentLoaded', () => {
     const settingsForm = document.getElementById('settingsForm');
     const cancelSettingsButton = document.getElementById('cancelSettings');
     const settingsError = document.getElementById('settingsError');
+    const saveSettingsButton = document.getElementById('saveSettings');
+    const archivalBackend = document.getElementById('archivalBackend');
+    const archivalBucket = document.getElementById('archivalBucket');
+
+    function validateSettings() {
+        const isArchivalOn = archivalBackend.value !== 'Off';
+        const isBucketEmpty = archivalBucket.value.trim() === '';
+        saveSettingsButton.disabled = isArchivalOn && isBucketEmpty;
+    }
 
     if (settingsButton && settingsOverlay && settingsForm && cancelSettingsButton) {
+        if (archivalBackend && archivalBucket) {
+            archivalBackend.addEventListener('change', validateSettings);
+            archivalBucket.addEventListener('input', validateSettings);
+        }
+
         settingsButton.addEventListener('click', async () => {
             try {
                 const response = await fetch('/api/settings');
@@ -554,8 +568,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const settings = await response.json();
                 document.getElementById('rescanInterval').value = settings.rescan_interval;
                 document.getElementById('taggingModel').value = settings.tagging_model;
-                document.getElementById('archivalBackend').value = settings.archival_backend;
-                document.getElementById('archivalBucket').value = settings.archival_bucket;
+                archivalBackend.value = settings.archival_backend;
+                archivalBucket.value = settings.archival_bucket;
+                validateSettings(); // Initial validation
                 settingsOverlay.style.display = 'flex';
             } catch (error) {
                 console.error('Error fetching settings:', error);
