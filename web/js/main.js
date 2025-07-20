@@ -548,12 +548,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const archivalBucket = document.getElementById('archivalBucket');
 
     function validateSettings() {
-        const isArchivalOn = archivalBackend.value !== 'Off';
-        const isBucketEmpty = archivalBucket.value.trim() === '';
-        saveSettingsButton.disabled = isArchivalOn && isBucketEmpty;
+        if (saveSettingsButton && archivalBackend && archivalBucket) {
+            const isArchivalOn = archivalBackend.value !== 'Off';
+            const isBucketEmpty = archivalBucket.value.trim() === '';
+            saveSettingsButton.disabled = isArchivalOn && isBucketEmpty;
+        }
     }
 
-    if (settingsButton && settingsOverlay && settingsForm && cancelSettingsButton) {
+    if (settingsButton && settingsOverlay && settingsForm && cancelSettingsButton && saveSettingsButton) {
         if (archivalBackend && archivalBucket) {
             archivalBackend.addEventListener('change', validateSettings);
             archivalBucket.addEventListener('input', validateSettings);
