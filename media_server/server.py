@@ -100,6 +100,8 @@ def close_db(error):
         delattr(flask_g, 'sqlite_db') # Remove from flask_g
 
 # --- Background Scanner ---
+scanner_wakeup_event = threading.Event()
+
 def background_scanner_task(app_context, settings_manager_instance: settings_utils.SettingsManager):
     """
     A background task that periodically rescans the storage directory.
@@ -128,10 +130,10 @@ def background_scanner_task(app_context, settings_manager_instance: settings_uti
         while True:
             rescan_interval = settings_manager_instance.get().rescan_interval
             if rescan_interval <= 0:
-                logging.info("Rescanning is disabled, scanner will sleep for a long time.")
-                # Sleep for a very long time to effectively "pause" without exiting the thread.
-                # This allows it to be woken up if the interval is changed later.
-                time.sleep(3600) # Sleep for 1 hour then check again
+                logging.info("Rescanning is disabled, scanner will sleep until settings change.")
+                scanner_wakeup_event.wait() # Wait indefinitely until event is set
+                scanner_wakeup_event.clear() # Clear the event after waking up
+                logging.info("Scanner woken up by settings change.")
                 continue
 
             try:
@@ -148,10 +150,10 @@ def background_scanner_task(app_context, settings_manager_instance: settings_uti
 
             # Fetch interval again in case it was changed during the scan
             current_interval = settings_manager_instance.get().rescan_interval
-            if current_interval <= 0: current_interval = 3600 # If disabled, check again in an hour
-
-            logging.debug(f"Scanner sleeping for {current_interval} seconds.")
-            time.sleep(current_interval)
+            if current_interval > 0:
+                logging.debug(f"Scanner sleeping for {current_interval} seconds.")
+                scanner_wakeup_event.wait(timeout=current_interval)
+                scanner_wakeup_event.clear()
 
 
 # --- Flask Routes ---
@@ -456,8 +458,14 @@ def put_settings():
         abort(400, description="Request body must be a JSON object.")
 
     try:
+        current_settings = settings_manager.get()
         new_settings = settings_utils.Settings(**request.json)
         settings_manager.write_settings(new_settings)
+
+        if current_settings.rescan_interval <= 0 and new_settings.rescan_interval > 0:
+            logging.info("Rescan interval changed from disabled to enabled, waking up scanner.")
+            scanner_wakeup_event.set()
+
         return jsonify(dataclasses.asdict(new_settings))
     except (TypeError, ValueError) as e:
         abort(400, description=f"Invalid settings format: {e}")

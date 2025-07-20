@@ -276,22 +276,53 @@ class TestServerBackgroundScan(unittest.TestCase):
         self.settings_manager = settings_utils.SettingsManager(self.settings_file)
         media_server_module.settings_manager = self.settings_manager
 
+        self.client = flask_app.test_client()
+
     def tearDown(self):
         db_utils.close_db_connection()
         shutil.rmtree(self.test_dir)
         self.app_context.pop()
 
-    @mock.patch('media_server.server.time.sleep', side_effect=InterruptedError)
+    @mock.patch('media_server.server.scanner_wakeup_event.wait')
     @mock.patch('media_server.server.media_scanner.scan_directory')
-    def test_background_scanner_task_uses_settings_interval(self, mock_scan_directory, mock_sleep):
-        test_interval = 123
-        self.settings_manager.write_settings(settings_utils.Settings(rescan_interval=test_interval))
+    def test_scanner_wakes_up_on_interval_change(self, mock_scan_directory, mock_event_wait):
+        self.settings_manager.write_settings(settings_utils.Settings(rescan_interval=0))
 
-        with self.assertRaises(InterruptedError):
-            media_server_module.background_scanner_task(flask_app.app_context(), self.settings_manager)
+        # Event to signal that the scanner has started and is waiting
+        scanner_waiting_event = threading.Event()
+        def wait_side_effect(timeout=None):
+            scanner_waiting_event.set()
+        mock_event_wait.side_effect = wait_side_effect
 
-        mock_scan_directory.assert_called_once_with(self.test_dir, self.db_path, rescan=True)
-        mock_sleep.assert_any_call(test_interval)
+        scanner_thread = threading.Thread(
+            target=media_server_module.background_scanner_task,
+            args=(flask_app.app_context(), self.settings_manager),
+            daemon=True
+        )
+        scanner_thread.start()
+
+        # Wait for the scanner to be in the waiting state
+        self.assertTrue(scanner_waiting_event.wait(timeout=5))
+
+        # Now, update the settings, which should trigger the event
+        new_settings = {
+            "rescan_interval": 120,
+            "tagging_model": "Off",
+            "archival_backend": "Off",
+            "archival_bucket": ""
+        }
+        response = self.client.put('/api/settings', json=new_settings)
+        self.assertEqual(response.status_code, 200)
+
+        # The thread should have been woken up and called scan_directory
+        # We'll give it a moment to run
+        time.sleep(0.1)
+        mock_scan_directory.assert_called()
+
+        # Clean up
+        self.settings_manager.write_settings(settings_utils.Settings(rescan_interval=0))
+        media_server_module.scanner_wakeup_event.set() # Wake up the thread to allow it to exit
+        scanner_thread.join(timeout=1)
 
 
 if __name__ == '__main__':
