@@ -586,6 +586,11 @@ footer {
     color: white;
 }
 
+#saveSettings:disabled {
+    background-color: #a0a0a0;
+    cursor: not-allowed;
+}
+
 #cancelSettings {
     background-color: #e0e0e0;
     color: #333;
