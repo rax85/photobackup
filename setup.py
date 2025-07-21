@@ -12,6 +12,8 @@ setup(
         'absl-py',
         'keras',
         'torch',
+        'torchvision',
+        'torchaudio',
         # Add other dependencies here as they are identified
     ],
     entry_points={
