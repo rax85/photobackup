@@ -350,8 +350,8 @@ class TestMediaScannerWithDB(unittest.TestCase):
         self.assertIsNotNone(db_entry)
         self.assertIn('city', db_entry)
         self.assertIn('country', db_entry)
-        # The test coordinates from setUp are for New York, USA
-        self.assertEqual(db_entry['city'], 'New York')
+        # The test coordinates from setUp are for Santa Monica, USA
+        self.assertEqual(db_entry['city'], 'Santa Monica')
         self.assertEqual(db_entry['country'], 'United States')
 
 if __name__ == '__main__':
