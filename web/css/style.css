@@ -475,8 +475,12 @@ footer {
     left: 0;
 }
 
-.pswp-caption-date, .pswp-caption-location {
+.pswp-caption-date, .pswp-caption-location, .pswp-caption-tags {
     display: block;
+}
+
+.pswp-caption-tags {
+    margin-top: 5px;
 }
 
 .upload-btn:hover {
