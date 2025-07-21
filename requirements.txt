@@ -6,6 +6,7 @@ Werkzeug
 pillow-heif
 piexif
 keras
+tensorflow
 torch
 torchvision
 torchaudio

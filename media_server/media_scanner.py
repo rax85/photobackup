@@ -10,9 +10,13 @@ from pillow_heif import register_heif_opener
 try:
     from . import database as db_utils # Relative import for package
     from .geolocator import GeoLocator
+    from .image_classifier import ImageClassifier
+    from .settings import SettingsManager
 except ImportError:
     from media_server import database as db_utils # Fallback for direct execution/testing
     from media_server.geolocator import GeoLocator
+    from media_server.image_classifier import ImageClassifier
+    from media_server.settings import SettingsManager
 
 # Initialize mimetypes database
 mimetypes.init()
@@ -242,6 +246,11 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
     os.makedirs(thumbnail_dir_abs, exist_ok=True)
     logging.info(f"Thumbnail directory ensured at: {thumbnail_dir_abs}")
 
+    settings_manager = SettingsManager(os.path.join(storage_dir, ".settings.json"))
+    settings = settings_manager.get()
+
+    image_classifier = ImageClassifier(settings)
+
     geolocator = GeoLocator()
     cities_csv_path = os.path.join(os.path.dirname(__file__), 'resources', 'cities.csv')
     geolocator.load_cities(cities_csv_path)
@@ -296,7 +305,7 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
                         logging.info(f"Timestamp updated for {rel_file_path} (SHA: {sha256_hex}). Re-extracting metadata.")
                         # Re-extract metadata and update DB. Thumbnail should be fine if SHA is same.
                         # However, if thumbnail was missing, try to regenerate.
-                        _process_single_file(abs_storage_dir, abs_file_path_to_check, sha256_hex, db_path, thumbnail_dir_abs, geolocator, db_entry.get('original_filename', os.path.basename(rel_file_path)))
+                        _process_single_file(abs_storage_dir, abs_file_path_to_check, sha256_hex, db_path, thumbnail_dir_abs, geolocator, image_classifier, db_entry.get('original_filename', os.path.basename(rel_file_path)))
                         # No need to remove from processed_rel_file_paths, as it's updated.
                 else:
                     # File exists and last_modified is same.
@@ -373,7 +382,7 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
                 # Or it's rescan=false and we are doing a full pass.
                 sha256_hex = get_file_sha256(abs_file_path)
                 if sha256_hex:
-                    _process_single_file(abs_storage_dir, abs_file_path, sha256_hex, db_path, thumbnail_dir_abs, geolocator, disk_filename, db_entry_for_path)
+                    _process_single_file(abs_storage_dir, abs_file_path, sha256_hex, db_path, thumbnail_dir_abs, geolocator, image_classifier, disk_filename, db_entry_for_path)
                     processed_rel_file_paths.add(rel_file_path)
                 else:
                     logging.warning(f"Could not get SHA256 for {abs_file_path}. Skipping.")
@@ -412,7 +421,9 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
     # This function no longer returns the data directly.
     # Callers should query the DB as needed.
 
-def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: str, db_path: str, thumbnail_dir_abs: str, geolocator: GeoLocator, disk_filename: str, existing_db_entry_for_path: Optional[Dict] = None):
+import json
+
+def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: str, db_path: str, thumbnail_dir_abs: str, geolocator: GeoLocator, image_classifier: ImageClassifier, disk_filename: str, existing_db_entry_for_path: Optional[Dict] = None):
     """Helper to process a single media file and update the database."""
     rel_file_path = os.path.relpath(abs_file_path, abs_storage_dir)
     logging.debug(f"Processing details for: {rel_file_path} (SHA: {sha256_hex})")
@@ -420,9 +431,11 @@ def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: s
     thumbnail_relative_path = None
     mime_type, _ = mimetypes.guess_type(abs_file_path)
     filesize = os.path.getsize(abs_file_path)
+    tags = None
 
     if mime_type and mime_type.startswith('image/'):
         thumbnail_relative_path = generate_thumbnail(abs_file_path, thumbnail_dir_abs, sha256_hex)
+        tags = image_classifier.classify_image(abs_file_path)
 
     try:
         last_modified = os.path.getmtime(abs_file_path)
@@ -494,6 +507,7 @@ def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: s
             'country': country,
             'mime_type': mime_type,
             'filesize': filesize,
+            'tags': json.dumps(tags) if tags else None,
         }
         db_utils.add_or_update_media_file(db_path, media_data)
         logging.debug(f"DB ADDED/UPDATED for SHA: {sha256_hex}, file: {disk_filename}, path: {rel_file_path}")
