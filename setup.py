@@ -10,7 +10,16 @@ setup(
     packages=find_packages(exclude=['tests*']),
     install_requires=[
         'absl-py',
-        # Add other dependencies here as they are identified
+        'requests',
+        'Pillow',
+        'Flask',
+        'Werkzeug',
+        'pillow-heif',
+        'piexif',
+        'keras',
+        'torch',
+        'torchvision',
+        'torchaudio',
     ],
     entry_points={
         'console_scripts': [
