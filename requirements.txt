@@ -5,3 +5,5 @@ Flask
 Werkzeug
 pillow-heif
 piexif
+keras
+torch

@@ -10,6 +10,8 @@ setup(
     packages=find_packages(exclude=['tests*']),
     install_requires=[
         'absl-py',
+        'keras',
+        'torch',
         # Add other dependencies here as they are identified
     ],
     entry_points={

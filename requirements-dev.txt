@@ -1,6 +1,8 @@
 # For development and running tests
 requests
 piexif
+keras
+torch
 # Add other testing specific dependencies here, e.g.
 # pytest
 # coverage
