@@ -1,6 +1,7 @@
 # Media Server
 
 [![Python application](https://github.com/rax85/photobackup/actions/workflows/python-app.yml/badge.svg)](https://github.com/rax85/photobackup/actions/workflows/python-app.yml)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 A simple web-based media server application that scans a directory for images,
 provides an API to list and view them, and allows new image uploads. It features
