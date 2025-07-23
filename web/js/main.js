@@ -196,6 +196,16 @@ document.addEventListener('DOMContentLoaded', () => {
                             if (item.city) {
                                 captionHTML += `<div class="pswp-caption-location">${item.city}</div>`;
                             }
+                            if (item.tags) {
+                                try {
+                                    const tags = JSON.parse(item.tags.replace(/'/g, '"'));
+                                    if (tags && tags.length > 0) {
+                                        captionHTML += `<div class="pswp-caption-tags">${tags.map(t => `#${t[0]}`).join(' ')}</div>`;
+                                    }
+                                } catch (e) {
+                                    console.error("Error parsing tags:", e);
+                                }
+                            }
                             el.innerHTML = captionHTML;
                         } else {
                             el.innerHTML = '';

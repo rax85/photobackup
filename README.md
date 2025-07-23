@@ -84,6 +84,7 @@ The server exposes the following HTTP API endpoints:
         *   `longitude`: (float, optional) GPS longitude in decimal degrees (negative for West/South), if available from EXIF. Null otherwise.
         *   `city`: (string, optional) City name derived from GPS coordinates. Null if not available.
         *   `country`: (string, optional) Country name derived from GPS coordinates. Null if not available.
+        *   `tags`: (string, optional) A JSON string of a list of tags for the image. Null if not available.
         ```json
         {
           "sha256_hash_1": {
@@ -98,7 +99,8 @@ The server exposes the following HTTP API endpoints:
             "latitude": 34.0522,
             "longitude": -118.2437,
             "city": "Los Angeles",
-            "country": "United States"
+            "country": "United States",
+            "tags": "['cat', 'tabby']"
           },
           "another_sha_hash": {
             "filename": "photo_without_gps.png",
@@ -112,7 +114,8 @@ The server exposes the following HTTP API endpoints:
             "latitude": null,
             "longitude": null,
             "city": null,
-            "country": null
+            "country": null,
+            "tags": null
           }
           // ... more items
         }
