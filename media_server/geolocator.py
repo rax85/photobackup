@@ -3,12 +3,14 @@ from dataclasses import dataclass
 from math import radians, sin, cos, sqrt, atan2
 from threading import Lock
 
+
 @dataclass
 class City:
     name: str
     country: str
     latitude: float
     longitude: float
+
 
 class GeoLocator:
     """
@@ -18,6 +20,7 @@ class GeoLocator:
     to find the closest city to a given latitude and longitude. It uses the
         Haversine formula to calculate distances.
     """
+
     _instance = None
     _lock = Lock()
 
@@ -55,7 +58,7 @@ class GeoLocator:
         with self._lock:
             if self.loaded:
                 return
-            with open(csv_file, 'r') as f:
+            with open(csv_file, "r") as f:
                 reader = csv.reader(f)
                 next(reader)  # Skip header
                 for row in reader:
@@ -84,11 +87,13 @@ class GeoLocator:
         if not self.cities:
             return None
 
-        min_distance = float('inf')
+        min_distance = float("inf")
         closest_city = None
 
         for city in self.cities:
-            distance = self._haversine_distance(latitude, longitude, city.latitude, city.longitude)
+            distance = self._haversine_distance(
+                latitude, longitude, city.latitude, city.longitude
+            )
             if distance < min_distance:
                 min_distance = distance
                 closest_city = city

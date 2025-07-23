@@ -1,14 +1,22 @@
 import os
-os.environ['KERAS_BACKEND'] = 'torch'
+
+os.environ["KERAS_BACKEND"] = "torch"
 
 import keras
 from keras.applications import ResNet50V2, MobileNetV3Small
 from keras.preprocessing import image
-from keras.applications.resnet_v2 import preprocess_input as resnet_preprocess, decode_predictions as resnet_decode
-from keras.applications.mobilenet_v3 import preprocess_input as mobilenet_preprocess, decode_predictions as mobilenet_decode
+from keras.applications.resnet_v2 import (
+    preprocess_input as resnet_preprocess,
+    decode_predictions as resnet_decode,
+)
+from keras.applications.mobilenet_v3 import (
+    preprocess_input as mobilenet_preprocess,
+    decode_predictions as mobilenet_decode,
+)
 import numpy as np
 
 from media_server.settings import Settings
+
 
 class ImageClassifier:
     def __init__(self, settings: Settings):
@@ -18,11 +26,11 @@ class ImageClassifier:
         self.decode_predictions = None
 
         if self.settings.tagging_model == "Resnet":
-            self.model = ResNet50V2(weights='imagenet')
+            self.model = ResNet50V2(weights="imagenet")
             self.preprocess_input = resnet_preprocess
             self.decode_predictions = resnet_decode
         elif self.settings.tagging_model == "Mobilenet":
-            self.model = MobileNetV3Small(weights='imagenet')
+            self.model = MobileNetV3Small(weights="imagenet")
             self.preprocess_input = mobilenet_preprocess
             self.decode_predictions = mobilenet_decode
 

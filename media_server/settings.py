@@ -2,13 +2,16 @@ import dataclasses
 import json
 from typing import Literal, Optional
 
+
 @dataclasses.dataclass
 class Settings:
     """A data class representing the application settings."""
+
     rescan_interval: int = 600
     tagging_model: Literal["Resnet", "Mobilenet", "Off"] = "Off"
     archival_backend: Literal["Google Cloud", "AWS", "Off"] = "Off"
     archival_bucket: str = ""
+
 
 class SettingsManager:
     """A class to manage the application settings."""
