@@ -6,6 +6,7 @@ from typing import Dict, Optional, Tuple, Set
 from PIL import Image, ImageOps, ExifTags
 from datetime import datetime
 from pillow_heif import register_heif_opener
+import concurrent.futures
 
 try:
     from . import database as db_utils  # Relative import for package
@@ -246,20 +247,6 @@ def _delete_thumbnail_file(
 
 
 def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None:
-    """
-    Scans a directory for media files and updates the database.
-
-    This function walks through the given `storage_dir`, identifies media files,
-    and updates their metadata in the SQLite database specified by `db_path`.
-    It can perform a full scan or a rescan, which checks for modifications
-    and deletions.
-
-    Args:
-        storage_dir: The path to the directory to scan for media files.
-        db_path: The path to the SQLite database file.
-        rescan: If True, performs a rescan to check for modifications and
-                deletions. If False, performs a full scan.
-    """
     if not os.path.isdir(storage_dir):
         logging.error(f"Storage directory not found: {storage_dir}")
         return
@@ -272,37 +259,26 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
     settings = settings_manager.get()
 
     image_classifier = ImageClassifier(settings)
-
     geolocator = GeoLocator()
     cities_csv_path = os.path.join(os.path.dirname(__file__), "resources", "cities.csv")
     geolocator.load_cities(cities_csv_path)
 
     abs_storage_dir = os.path.abspath(storage_dir)
-    processed_rel_file_paths: Set[str] = (
-        set()
-    )  # Keep track of files processed in this scan run
+    processed_rel_file_paths: Set[str] = set()
+    media_to_process = []
 
-    # Phase 1: Handle existing files in DB during a rescan
+    # Rescan logic to find modified/deleted files
     if rescan:
         logging.info(f"Rescanning directory: {storage_dir} using DB: {db_path}")
-        db_file_entries = db_utils.get_all_media_files(
-            db_path
-        )  # Get all entries: {sha: data}
-
+        db_file_entries = db_utils.get_all_media_files(db_path)
         for sha256_hex, db_entry in db_file_entries.items():
             rel_file_path = db_entry.get("file_path")
             if not rel_file_path:
-                logging.warning(
-                    f"DB entry for SHA {sha256_hex} is missing file_path. Skipping."
-                )
                 continue
-
             abs_file_path_to_check = os.path.normpath(
                 os.path.join(abs_storage_dir, rel_file_path)
             )
-            processed_rel_file_paths.add(
-                rel_file_path
-            )  # Mark as seen from DB perspective
+            processed_rel_file_paths.add(rel_file_path)
 
             if not os.path.isfile(abs_file_path_to_check):
                 logging.info(
@@ -314,233 +290,93 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
                 db_utils.delete_media_file_by_sha(db_path, sha256_hex)
                 continue
 
-            try:
-                current_fs_last_modified = os.path.getmtime(abs_file_path_to_check)
-                db_last_modified = db_entry.get("last_modified")
-
-                if abs(current_fs_last_modified - db_last_modified) > 1e-6 or (
-                    db_entry.get("tagging_model") != settings.tagging_model
-                    and settings.tagging_model != "Off"
-                ):  # Compare floats carefully
-                    logging.info(
-                        f"File {rel_file_path} (SHA: {sha256_hex}) has been modified. Re-processing."
+            current_fs_last_modified = os.path.getmtime(abs_file_path_to_check)
+            db_last_modified = db_entry.get("last_modified")
+            if abs(current_fs_last_modified - db_last_modified) > 1e-6 or (
+                db_entry.get("tagging_model") != settings.tagging_model
+                and settings.tagging_model != "Off"
+            ):
+                media_to_process.append(
+                    (
+                        abs_file_path_to_check,
+                        os.path.basename(rel_file_path),
+                        db_entry,
                     )
-                    # File content might have changed, leading to a new SHA, or just metadata like mtime.
-                    new_sha256_hex = get_file_sha256(abs_file_path_to_check)
-
-                    if not new_sha256_hex:  # Error hashing, treat as problematic
-                        logging.error(
-                            f"Could not re-hash modified file {rel_file_path}. Removing old DB entry."
-                        )
-                        _delete_thumbnail_file(
-                            thumbnail_dir_abs, db_entry.get("thumbnail_file")
-                        )
-                        db_utils.delete_media_file_by_sha(db_path, sha256_hex)
-                        continue
-
-                    if new_sha256_hex != sha256_hex:
-                        logging.info(
-                            f"SHA changed for {rel_file_path}. Old: {sha256_hex}, New: {new_sha256_hex}. Updating DB."
-                        )
-                        # Delete old entry (and its thumbnail)
-                        _delete_thumbnail_file(
-                            thumbnail_dir_abs, db_entry.get("thumbnail_file")
-                        )
-                        db_utils.delete_media_file_by_sha(db_path, sha256_hex)
-                        # The new SHA version will be picked up by the walk phase as a new file.
-                        # We remove it from processed_rel_file_paths so the walk processes it.
-                        processed_rel_file_paths.remove(rel_file_path)
-                    else:  # SHA is the same, only mtime (and possibly other metadata) changed
-                        logging.info(
-                            f"Timestamp updated for {rel_file_path} (SHA: {sha256_hex}). Re-extracting metadata."
-                        )
-                        # Re-extract metadata and update DB. Thumbnail should be fine if SHA is same.
-                        # However, if thumbnail was missing, try to regenerate.
-                        _process_single_file(
-                            abs_storage_dir,
-                            abs_file_path_to_check,
-                            sha256_hex,
-                            db_path,
-                            thumbnail_dir_abs,
-                            geolocator,
-                            image_classifier,
-                            settings,
-                            db_entry.get(
-                                "original_filename", os.path.basename(rel_file_path)
-                            ),
-                        )
-                        # No need to remove from processed_rel_file_paths, as it's updated.
-                else:
-                    # File exists and last_modified is same.
-                    # Check if thumbnail exists if it's supposed to.
-                    mime_type, _ = mimetypes.guess_type(abs_file_path_to_check)
-                    if (
-                        mime_type
-                        and mime_type.startswith("image/")
-                        and db_entry.get("thumbnail_file")
-                    ):
-                        thumb_rel_path = db_entry["thumbnail_file"]
-                        if not os.path.exists(
-                            os.path.join(thumbnail_dir_abs, thumb_rel_path)
-                        ):
-                            logging.info(
-                                f"Thumbnail missing for {rel_file_path} (SHA: {sha256_hex}). Regenerating."
-                            )
-                            new_thumb_rel_path = generate_thumbnail(
-                                abs_file_path_to_check, thumbnail_dir_abs, sha256_hex
-                            )
-                            if new_thumb_rel_path:
-                                db_utils.update_media_file_fields(
-                                    db_path,
-                                    sha256_hex,
-                                    {"thumbnail_file": new_thumb_rel_path},
-                                )
-                    logging.debug(
-                        f"File {rel_file_path} (SHA: {sha256_hex}) is unchanged."
-                    )
-
-            except OSError as e:
-                logging.error(
-                    f"Could not get metadata for file {abs_file_path_to_check} during rescan: {e}. Removing from DB."
                 )
-                _delete_thumbnail_file(
-                    thumbnail_dir_abs, db_entry.get("thumbnail_file")
-                )
-                db_utils.delete_media_file_by_sha(db_path, sha256_hex)
 
-    else:  # Full scan (rescan=False) or initial scan
-        logging.info(
-            f"Performing full/initial scan of directory: {storage_dir} using DB: {db_path}"
-        )
-        # We will iterate all files. If a file is already in DB with same mtime, we can skip.
-        # Otherwise, we process and add/update.
-        # Files in DB not found on disk will be handled by a cleanup phase later if rescan=False.
-        # For now, rescan=False focuses on adding/updating from disk.
-
-    # Phase 2: Walk the directory for new files or files not handled by rescan's DB check
+    # Filesystem walk for new files
     logging.info("Scanning filesystem for new or changed files...")
     for root, dirs, files in os.walk(abs_storage_dir):
-        if THUMBNAIL_DIR_NAME in dirs:  # Correctly compare with basename
-            dirs.remove(THUMBNAIL_DIR_NAME)  # Exclude .thumbnails from scan
-
+        if THUMBNAIL_DIR_NAME in dirs:
+            dirs.remove(THUMBNAIL_DIR_NAME)
         for disk_filename in files:
             abs_file_path = os.path.normpath(os.path.join(root, disk_filename))
             rel_file_path = os.path.relpath(abs_file_path, abs_storage_dir)
-
-            if not os.path.isfile(
-                abs_file_path
-            ):  # Should not happen with os.walk's `files`
-                logging.debug(f"Skipping non-file item: {abs_file_path}")
-                continue
-
             if rel_file_path in processed_rel_file_paths and rescan:
-                # This file was already handled by the rescan logic (Phase 1)
-                # or it was a file whose SHA changed and was removed from processed_rel_file_paths
-                # to be re-added here. If it's still in processed_rel_file_paths, it means it was
-                # confirmed up-to-date or mtime was updated for same SHA.
-                logging.debug(
-                    f"File {rel_file_path} already processed or checked during rescan phase."
-                )
                 continue
-
             if is_media_file(abs_file_path):
-                logging.debug(
-                    f"Processing media file: {abs_file_path} (relative: {rel_file_path})"
-                )
-
-                # Check DB for this file_path and its last_modified time
-                # This is relevant for both `rescan=True` (new files not in DB yet)
-                # and `rescan=False` (checking if file needs update)
                 db_entry_for_path = db_utils.get_media_file_by_path(
                     db_path, rel_file_path
                 )
-                current_fs_last_modified = os.path.getmtime(abs_file_path)
+                media_to_process.append((abs_file_path, disk_filename, db_entry_for_path))
+                processed_rel_file_paths.add(rel_file_path)
 
-                if (
-                    db_entry_for_path
-                    and abs(
-                        current_fs_last_modified
-                        - db_entry_for_path.get("last_modified", 0.0)
-                    )
-                    < 1e-6
-                    and (
-                        db_entry_for_path.get("tagging_model") == settings.tagging_model
-                        or settings.tagging_model == "Off"
-                    )
-                ):
-                    # File exists in DB and its modification time is the same. Skip.
-                    logging.debug(
-                        f"File {rel_file_path} found in DB and is unchanged. Skipping full processing."
-                    )
-                    processed_rel_file_paths.add(rel_file_path)  # Ensure it's marked
-                    # Check thumbnail integrity even if mtime is same
-                    if (
-                        (mime_type := mimetypes.guess_type(abs_file_path)[0])
-                        and mime_type.startswith("image/")
-                        and db_entry_for_path.get("thumbnail_file")
-                        and not os.path.exists(
-                            os.path.join(
-                                thumbnail_dir_abs, db_entry_for_path["thumbnail_file"]
-                            )
-                        )
-                    ):
-                        logging.info(
-                            f"Thumbnail missing for {rel_file_path} (SHA: {db_entry_for_path['sha256_hex']}). Regenerating."
-                        )
-                        new_thumb_rel_path = generate_thumbnail(
-                            abs_file_path,
-                            thumbnail_dir_abs,
-                            db_entry_for_path["sha256_hex"],
-                        )
-                        if new_thumb_rel_path:
-                            db_utils.update_media_file_fields(
-                                db_path,
-                                db_entry_for_path["sha256_hex"],
-                                {"thumbnail_file": new_thumb_rel_path},
-                            )
-                    continue
+    # Process all identified files
+    all_media_data = []
+    for abs_path, filename, db_entry in media_to_process:
+        sha = get_file_sha256(abs_path)
+        if sha:
+            data = _process_single_file(
+                abs_storage_dir,
+                abs_path,
+                sha,
+                db_path,
+                thumbnail_dir_abs,
+                geolocator,
+                image_classifier,
+                settings,
+                filename,
+                db_entry,
+            )
+            if data:
+                all_media_data.append(data)
 
-                # If we reach here, the file is either new, or modified, or not in DB by this path.
-                # Or it's rescan=false and we are doing a full pass.
-                sha256_hex = get_file_sha256(abs_file_path)
-                if sha256_hex:
-                    _process_single_file(
-                        abs_storage_dir,
-                        abs_file_path,
-                        sha256_hex,
-                        db_path,
-                        thumbnail_dir_abs,
-                        geolocator,
-                        image_classifier,
-                        settings,
-                        disk_filename,
-                        db_entry_for_path,
-                    )
-                    processed_rel_file_paths.add(rel_file_path)
-                else:
-                    logging.warning(
-                        f"Could not get SHA256 for {abs_file_path}. Skipping."
-                    )
-            else:
-                logging.debug(f"Skipping non-media file: {abs_file_path}")
+    # Thumbnail generation in parallel
+    thumbnail_futures = {}
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        for media_data in all_media_data:
+            if media_data.get("_thumbnail_needed"):
+                future = executor.submit(
+                    generate_thumbnail,
+                    media_data["_abs_file_path"],
+                    thumbnail_dir_abs,
+                    media_data["sha256_hex"],
+                )
+                thumbnail_futures[future] = media_data
 
-    # Phase 3: Cleanup (Only if `rescan` is True, to remove DB entries for files no longer on disk)
-    # If `rescan` is False, this phase is skipped because we assume it's an additive/updating scan.
-    # The previous rescan logic (Phase 1) already handles deletions for files it knew about.
-    # This explicit phase ensures any file in DB not touched/seen by the walk is removed.
+    for future in concurrent.futures.as_completed(thumbnail_futures):
+        media_data = thumbnail_futures[future]
+        try:
+            thumbnail_path = future.result()
+            if thumbnail_path:
+                media_data["thumbnail_file"] = thumbnail_path
+        except Exception as exc:
+            logging.error(
+                f"Thumbnail generation failed for {media_data['_abs_file_path']}: {exc}"
+            )
+
+    # Update database with all collected data
+    for media_data in all_media_data:
+        # Clean up temporary keys before DB insertion
+        media_data.pop("_thumbnail_needed", None)
+        media_data.pop("_abs_file_path", None)
+        db_utils.add_or_update_media_file(db_path, media_data)
+
+    # Cleanup phases
     if rescan:
-        logging.info(
-            "Finalizing rescan: Checking for DB entries not found on filesystem..."
-        )
         all_db_paths = db_utils.get_all_db_file_paths(db_path)
         for db_rel_path in all_db_paths:
             if db_rel_path not in processed_rel_file_paths:
-                # This file is in the DB but was not found on the filesystem during the walk
-                # and was not handled by the initial DB check (e.g. if it was deleted before scan started)
-                logging.info(
-                    f"File {db_rel_path} is in DB but not on filesystem. Removing from DB."
-                )
-                # Need to get SHA to delete associated thumbnail
                 entry_to_delete = db_utils.get_media_file_by_path(db_path, db_rel_path)
                 if entry_to_delete:
                     _delete_thumbnail_file(
@@ -548,22 +384,11 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
                     )
                     db_utils.delete_media_file_by_sha(
                         db_path, entry_to_delete["sha256_hex"]
-                    )  # Delete by SHA to ensure data consistency
-                else:  # Should not happen if get_all_db_file_paths worked
-                    db_utils.delete_media_file_by_path(db_path, db_rel_path)
-
-    # Phase 4: Synchronize .thumbnails directory: remove any orphaned thumbnails
+                    )
     _cleanup_orphaned_thumbnails(db_path, thumbnail_dir_abs)
 
     media_count = len(db_utils.get_all_media_files(db_path))
-    if rescan:
-        logging.info(f"Rescan complete. Database contains {media_count} media files.")
-    else:
-        logging.info(
-            f"Initial/Full scan complete. Database contains {media_count} media files."
-        )
-    # This function no longer returns the data directly.
-    # Callers should query the DB as needed.
+    logging.info(f"Scan complete. Database contains {media_count} media files.")
 
 
 import json
@@ -580,23 +405,23 @@ def _process_single_file(
     settings: SettingsManager,
     disk_filename: str,
     existing_db_entry_for_path: Optional[Dict] = None,
-):
-    """Helper to process a single media file and update the database."""
+) -> Optional[Dict]:
+    """
+    Helper to process a single media file, returning its metadata dictionary.
+    This version does NOT generate the thumbnail itself but returns info to do so.
+    """
     rel_file_path = os.path.relpath(abs_file_path, abs_storage_dir)
     logging.debug(f"Processing details for: {rel_file_path} (SHA: {sha256_hex})")
 
-    thumbnail_relative_path = None
     mime_type, _ = mimetypes.guess_type(abs_file_path)
     filesize = os.path.getsize(abs_file_path)
     tags = None
+    thumbnail_needed = False
 
     existing_entry_for_sha = db_utils.get_media_file_by_sha(db_path, sha256_hex)
 
     if mime_type and mime_type.startswith("image/"):
-        thumbnail_relative_path = generate_thumbnail(
-            abs_file_path, thumbnail_dir_abs, sha256_hex
-        )
-
+        thumbnail_needed = True  # Mark that a thumbnail is needed
         tagging_model_in_db = (
             existing_entry_for_sha.get("tagging_model")
             if existing_entry_for_sha
@@ -628,16 +453,10 @@ def _process_single_file(
                     image_width, image_height = img.size
                     exif_data = img.getexif()
                     if exif_data:
-                        # Prefer DateTimeOriginal (36867), fallback to DateTime (306)
-                        date_time_original_tag = 36867
-                        date_time_tag = 306
-
-                        exif_date_str = None
-                        if date_time_original_tag in exif_data:
-                            exif_date_str = exif_data[date_time_original_tag]
-                        elif date_time_tag in exif_data:
-                            exif_date_str = exif_data[date_time_tag]
-
+                        date_time_original_tag, date_time_tag = 36867, 306
+                        exif_date_str = exif_data.get(
+                            date_time_original_tag
+                        ) or exif_data.get(date_time_tag)
                         if exif_date_str:
                             try:
                                 dt_object = datetime.strptime(
@@ -648,7 +467,6 @@ def _process_single_file(
                                 logging.warning(
                                     f"Malformed EXIF date string '{exif_date_str}' in {abs_file_path}."
                                 )
-
                         parsed_lat, parsed_lon = _get_gps_coordinates_from_exif(
                             exif_data
                         )
@@ -656,31 +474,22 @@ def _process_single_file(
                             latitude = parsed_lat
                         if parsed_lon is not None:
                             longitude = parsed_lon
-
                         if latitude and longitude:
-                            logging.info(f"Lat: {latitude}, Lon: {longitude}")
                             closest_city = geolocator.nearest_city(latitude, longitude)
                             if closest_city:
-                                city = closest_city.name
-                                country = closest_city.country
+                                city, country = closest_city.name, closest_city.country
             except Exception as exif_e:
                 logging.warning(
                     f"Could not read metadata for {abs_file_path}: {exif_e}."
                 )
 
-        # Determine original_filename
-        # If there's an existing DB entry for this SHA, use its original_filename.
-        # Otherwise, if there's an existing entry for this path (but different SHA), it's a replacement, use current disk_filename.
-        # Otherwise (new file), use current disk_filename.
         original_filename = disk_filename
         if existing_entry_for_sha:
             original_filename = existing_entry_for_sha.get(
                 "original_filename", disk_filename
             )
-        elif (
-            existing_db_entry_for_path
-        ):  # File path existed, but SHA is new (file was replaced)
-            original_filename = disk_filename  # Treat as new original
+        elif existing_db_entry_for_path:
+            original_filename = disk_filename
 
         media_data = {
             "sha256_hex": sha256_hex,
@@ -689,7 +498,7 @@ def _process_single_file(
             "file_path": rel_file_path,
             "last_modified": last_modified,
             "original_creation_date": original_creation_date,
-            "thumbnail_file": thumbnail_relative_path,
+            "thumbnail_file": None,  # Will be filled in later
             "width": image_width,
             "height": image_height,
             "latitude": latitude,
@@ -700,11 +509,11 @@ def _process_single_file(
             "filesize": filesize,
             "tags": json.dumps(tags) if tags else None,
             "tagging_model": settings.tagging_model if tags else None,
+            # Add a temporary flag for the main scanner function
+            "_thumbnail_needed": thumbnail_needed,
+            "_abs_file_path": abs_file_path,
         }
-        db_utils.add_or_update_media_file(db_path, media_data)
-        logging.debug(
-            f"DB ADDED/UPDATED for SHA: {sha256_hex}, file: {disk_filename}, path: {rel_file_path}"
-        )
+        return media_data
 
     except OSError as e:
         logging.error(f"Could not get OS metadata for {abs_file_path}: {e}")
@@ -712,6 +521,7 @@ def _process_single_file(
         logging.error(
             f"Unexpected error processing file {abs_file_path}: {e}", exc_info=True
         )
+    return None
 
 
 def _cleanup_orphaned_thumbnails(db_path: str, thumbnail_dir_abs: str):
