@@ -6,7 +6,7 @@ from typing import Literal, Optional
 class Settings:
     """A data class representing the application settings."""
     rescan_interval: int = 600
-    tagging_model: Literal["Resnet", "Mobilenet", "Off"] = "Resnet"
+    tagging_model: Literal["Resnet", "Mobilenet", "Off"] = "Off"
     archival_backend: Literal["Google Cloud", "AWS", "Off"] = "Off"
     archival_bucket: str = ""
 
