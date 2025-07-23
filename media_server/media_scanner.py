@@ -282,7 +282,8 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
                 current_fs_last_modified = os.path.getmtime(abs_file_path_to_check)
                 db_last_modified = db_entry.get('last_modified')
 
-                if abs(current_fs_last_modified - db_last_modified) > 1e-6: # Compare floats carefully
+                if abs(current_fs_last_modified - db_last_modified) > 1e-6 or \
+                   (db_entry.get('tagging_model') != settings.tagging_model and settings.tagging_model != 'Off'): # Compare floats carefully
                     logging.info(f"File {rel_file_path} (SHA: {sha256_hex}) has been modified. Re-processing.")
                     # File content might have changed, leading to a new SHA, or just metadata like mtime.
                     new_sha256_hex = get_file_sha256(abs_file_path_to_check)
@@ -305,7 +306,7 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
                         logging.info(f"Timestamp updated for {rel_file_path} (SHA: {sha256_hex}). Re-extracting metadata.")
                         # Re-extract metadata and update DB. Thumbnail should be fine if SHA is same.
                         # However, if thumbnail was missing, try to regenerate.
-                        _process_single_file(abs_storage_dir, abs_file_path_to_check, sha256_hex, db_path, thumbnail_dir_abs, geolocator, image_classifier, db_entry.get('original_filename', os.path.basename(rel_file_path)))
+                        _process_single_file(abs_storage_dir, abs_file_path_to_check, sha256_hex, db_path, thumbnail_dir_abs, geolocator, image_classifier, settings, db_entry.get('original_filename', os.path.basename(rel_file_path)))
                         # No need to remove from processed_rel_file_paths, as it's updated.
                 else:
                     # File exists and last_modified is same.
@@ -363,7 +364,9 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
                 db_entry_for_path = db_utils.get_media_file_by_path(db_path, rel_file_path)
                 current_fs_last_modified = os.path.getmtime(abs_file_path)
 
-                if db_entry_for_path and abs(current_fs_last_modified - db_entry_for_path.get('last_modified', 0.0)) < 1e-6:
+                if db_entry_for_path and \
+                   abs(current_fs_last_modified - db_entry_for_path.get('last_modified', 0.0)) < 1e-6 and \
+                   (db_entry_for_path.get('tagging_model') == settings.tagging_model or settings.tagging_model == 'Off'):
                     # File exists in DB and its modification time is the same. Skip.
                     logging.debug(f"File {rel_file_path} found in DB and is unchanged. Skipping full processing.")
                     processed_rel_file_paths.add(rel_file_path) # Ensure it's marked
@@ -382,7 +385,7 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
                 # Or it's rescan=false and we are doing a full pass.
                 sha256_hex = get_file_sha256(abs_file_path)
                 if sha256_hex:
-                    _process_single_file(abs_storage_dir, abs_file_path, sha256_hex, db_path, thumbnail_dir_abs, geolocator, image_classifier, disk_filename, db_entry_for_path)
+                    _process_single_file(abs_storage_dir, abs_file_path, sha256_hex, db_path, thumbnail_dir_abs, geolocator, image_classifier, settings, disk_filename, db_entry_for_path)
                     processed_rel_file_paths.add(rel_file_path)
                 else:
                     logging.warning(f"Could not get SHA256 for {abs_file_path}. Skipping.")
@@ -423,7 +426,7 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
 
 import json
 
-def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: str, db_path: str, thumbnail_dir_abs: str, geolocator: GeoLocator, image_classifier: ImageClassifier, disk_filename: str, existing_db_entry_for_path: Optional[Dict] = None):
+def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: str, db_path: str, thumbnail_dir_abs: str, geolocator: GeoLocator, image_classifier: ImageClassifier, settings: SettingsManager, disk_filename: str, existing_db_entry_for_path: Optional[Dict] = None):
     """Helper to process a single media file and update the database."""
     rel_file_path = os.path.relpath(abs_file_path, abs_storage_dir)
     logging.debug(f"Processing details for: {rel_file_path} (SHA: {sha256_hex})")
@@ -433,9 +436,17 @@ def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: s
     filesize = os.path.getsize(abs_file_path)
     tags = None
 
+    existing_entry_for_sha = db_utils.get_media_file_by_sha(db_path, sha256_hex)
+
     if mime_type and mime_type.startswith('image/'):
         thumbnail_relative_path = generate_thumbnail(abs_file_path, thumbnail_dir_abs, sha256_hex)
-        tags = image_classifier.classify_image(abs_file_path)
+
+        tagging_model_in_db = existing_entry_for_sha.get('tagging_model') if existing_entry_for_sha else None
+
+        if settings.tagging_model != "Off" and settings.tagging_model != tagging_model_in_db:
+            tags = image_classifier.classify_image(abs_file_path)
+        elif existing_entry_for_sha:
+            tags = json.loads(existing_entry_for_sha.get('tags')) if existing_entry_for_sha.get('tags') else None
 
     try:
         last_modified = os.path.getmtime(abs_file_path)
@@ -485,7 +496,6 @@ def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: s
         # Otherwise, if there's an existing entry for this path (but different SHA), it's a replacement, use current disk_filename.
         # Otherwise (new file), use current disk_filename.
         original_filename = disk_filename
-        existing_entry_for_sha = db_utils.get_media_file_by_sha(db_path, sha256_hex)
         if existing_entry_for_sha:
             original_filename = existing_entry_for_sha.get('original_filename', disk_filename)
         elif existing_db_entry_for_path: # File path existed, but SHA is new (file was replaced)
@@ -508,6 +518,7 @@ def _process_single_file(abs_storage_dir: str, abs_file_path: str, sha256_hex: s
             'mime_type': mime_type,
             'filesize': filesize,
             'tags': json.dumps(tags) if tags else None,
+            'tagging_model': settings.tagging_model if tags else None,
         }
         db_utils.add_or_update_media_file(db_path, media_data)
         logging.debug(f"DB ADDED/UPDATED for SHA: {sha256_hex}, file: {disk_filename}, path: {rel_file_path}")

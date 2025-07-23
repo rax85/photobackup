@@ -137,7 +137,8 @@ def init_db(storage_dir: str) -> None:
                     country TEXT,
                     mime_type TEXT,
                     filesize INTEGER,
-                    tags TEXT
+                    tags TEXT,
+                    tagging_model TEXT
                 )
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_path ON media_files (file_path)")
@@ -181,7 +182,7 @@ def add_or_update_media_file(db_path: str, media_data: Dict[str, Any]) -> None:
                 'sha256_hex', 'filename', 'original_filename', 'file_path',
                 'last_modified', 'original_creation_date', 'thumbnail_file',
                 'width', 'height', 'latitude', 'longitude', 'city', 'country',
-                'mime_type', 'filesize', 'tags'
+                'mime_type', 'filesize', 'tags', 'tagging_model'
             ]
             values = [media_data.get(col) for col in columns]
             sql = f"INSERT OR REPLACE INTO media_files ({', '.join(columns)}) VALUES ({', '.join(['?'] * len(columns))})"
@@ -404,7 +405,8 @@ def update_media_file_fields(db_path: str, sha256_hex: str, fields_to_update: Di
     valid_columns = [
         'filename', 'original_filename', 'file_path', 'last_modified',
         'original_creation_date', 'thumbnail_file', 'width', 'height',
-        'latitude', 'longitude', 'city', 'country', 'mime_type', 'filesize', 'tags'
+        'latitude', 'longitude', 'city', 'country', 'mime_type', 'filesize', 'tags',
+        'tagging_model'
     ]
     update_clauses = []
     update_values = []

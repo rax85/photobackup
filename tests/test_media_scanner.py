@@ -354,5 +354,50 @@ class TestMediaScannerWithDB(unittest.TestCase):
         self.assertEqual(db_entry['city'], 'Santa Monica')
         self.assertEqual(db_entry['country'], 'United States')
 
+    def test_tagging_model_change_and_retag(self):
+        # 1. Initial scan with Resnet
+        settings_path = os.path.join(self.test_dir, ".settings.json")
+        settings_manager = media_scanner.SettingsManager(settings_path)
+        settings = settings_manager.get()
+        settings.tagging_model = "Resnet"
+        settings_manager.write_settings(settings)
+
+        with mock.patch('media_server.image_classifier.ImageClassifier.classify_image') as mock_classify:
+            mock_classify.return_value = [("tag1", 0.9)]
+            media_scanner.scan_directory(self.test_dir, self.db_path, rescan=False)
+
+            # 2. Verify initial state
+            db_entry = db_utils.get_media_file_by_sha(self.db_path, self.hash_img1)
+            self.assertEqual(db_entry['tagging_model'], "Resnet")
+            self.assertEqual(db_entry['tags'], '[["tag1", 0.9]]')
+            self.assertEqual(mock_classify.call_count, 5) # 5 images
+
+        # 3. Change settings to Mobilenet
+        settings.tagging_model = "Mobilenet"
+        settings_manager.write_settings(settings)
+
+        with mock.patch('media_server.image_classifier.ImageClassifier.classify_image') as mock_classify:
+            mock_classify.return_value = [("tag2", 0.8)]
+            media_scanner.scan_directory(self.test_dir, self.db_path, rescan=True)
+
+            # 4. Verify updated state
+            db_entry = db_utils.get_media_file_by_sha(self.db_path, self.hash_img1)
+            self.assertEqual(db_entry['tagging_model'], "Mobilenet")
+            self.assertEqual(db_entry['tags'], '[["tag2", 0.8]]')
+            self.assertEqual(mock_classify.call_count, 5)
+
+        # 5. Change settings to Off
+        settings.tagging_model = "Off"
+        settings_manager.write_settings(settings)
+
+        with mock.patch('media_server.image_classifier.ImageClassifier.classify_image') as mock_classify:
+            media_scanner.scan_directory(self.test_dir, self.db_path, rescan=True)
+
+            # 6. Verify tags are not changed
+            db_entry = db_utils.get_media_file_by_sha(self.db_path, self.hash_img1)
+            self.assertEqual(db_entry['tagging_model'], "Mobilenet") # Stays the same
+            self.assertEqual(db_entry['tags'], '[["tag2", 0.8]]')
+            mock_classify.assert_not_called()
+
 if __name__ == '__main__':
     unittest.main()
