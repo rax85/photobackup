@@ -36,6 +36,10 @@ class ImageClassifier:
         x = self.preprocess_input(x)
 
         preds = self.model.predict(x)
-        decoded_preds = self.decode_predictions(preds, top=5)[0]
+        decoded_preds = self.decode_predictions(preds, top=5)
 
-        return [(label, float(score)) for _, label, score in decoded_preds]
+        # The result is a list of lists of predictions, one for each image in the batch
+        predictions = []
+        for _, label, score in decoded_preds[0]:
+            predictions.append((label, float(score)))
+        return predictions

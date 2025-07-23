@@ -51,13 +51,13 @@ class TestImageClassifier(unittest.TestCase):
 
         # Mock the decode_predictions function
         with patch('media_server.image_classifier.resnet_decode') as mock_decode:
-            mock_decode.return_value = [
+            mock_decode.return_value = [[
                 ('n02123045', 'tabby', 0.5),
                 ('n02123159', 'tiger_cat', 0.3),
                 ('n02123394', 'Persian_cat', 0.1),
                 ('n02124075', 'Egyptian_cat', 0.05),
                 ('n02125311', 'cougar', 0.05)
-            ]
+            ]]
 
             # Mock image loading and preprocessing
             mock_img = MagicMock()
