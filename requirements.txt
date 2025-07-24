@@ -6,6 +6,7 @@ Werkzeug
 pillow-heif
 piexif
 keras
+keras_hub
 torch
 torchvision
 torchaudio
