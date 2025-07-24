@@ -19,7 +19,14 @@ from media_server.settings import Settings
 
 
 class ImageClassifier:
+    """A class for classifying images using a pre-trained model."""
+
     def __init__(self, settings: Settings):
+        """Initializes the ImageClassifier.
+
+        Args:
+            settings: A Settings object containing the configuration for the classifier.
+        """
         self.settings = settings
         self.model = None
         self.preprocess_input = None
@@ -34,7 +41,15 @@ class ImageClassifier:
             self.preprocess_input = mobilenet_preprocess
             self.decode_predictions = mobilenet_decode
 
-    def classify_image(self, image_path: str):
+    def classify_image(self, image_path: str) -> list[str]:
+        """Classifies an image and returns a list of labels.
+
+        Args:
+            image_path: The path to the image to classify.
+
+        Returns:
+            A list of string labels for the image.
+        """
         if not self.model:
             return []
 
@@ -49,5 +64,5 @@ class ImageClassifier:
         # The result is a list of lists of predictions, one for each image in the batch
         predictions = []
         for _, label, score in decoded_preds[0]:
-            predictions.append((label, float(score)))
+            predictions.append(label)
         return predictions

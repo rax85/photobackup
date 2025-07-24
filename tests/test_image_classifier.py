@@ -70,9 +70,8 @@ class TestImageClassifier(unittest.TestCase):
 
             # Assert that the predictions are in the correct format
             self.assertEqual(len(predictions), 5)
-            self.assertIsInstance(predictions[0], tuple)
-            self.assertIsInstance(predictions[0][0], str)
-            self.assertIsInstance(predictions[0][1], float)
+            self.assertIsInstance(predictions[0], str)
+            self.assertEqual(predictions[0], 'tabby')
 
 if __name__ == '__main__':
     unittest.main()
