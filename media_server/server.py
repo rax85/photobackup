@@ -29,10 +29,12 @@ try:
     from . import media_scanner
     from . import database as db_utils
     from . import settings as settings_utils
+    from .image_classifier import ImageClassifier
 except ImportError:
     from media_server import media_scanner  # Fallback for direct execution
     from media_server import database as db_utils
     from media_server import settings as settings_utils
+    from media_server.image_classifier import ImageClassifier
 
 
 FLAGS = flags.FLAGS
@@ -114,9 +116,7 @@ def close_db(error):
 scanner_wakeup_event = threading.Event()
 
 
-def background_scanner_task(
-    app_context, settings_manager_instance: settings_utils.SettingsManager
-):
+def background_scanner_task(app_context):
     """
     A background task that periodically rescans the storage directory.
 
@@ -125,7 +125,6 @@ def background_scanner_task(
 
     Args:
         app_context: The Flask application context.
-        settings_manager_instance: An instance of the SettingsManager.
     """
     # Background thread needs to manage its own DB connection via db_utils.thread_local
     # It doesn't use flask_g.
@@ -146,7 +145,13 @@ def background_scanner_task(
             f"Background scanner started for dir: {storage_dir}, DB: {db_path}"
         )
         while True:
-            rescan_interval = settings_manager_instance.get().rescan_interval
+            settings_manager_instance = settings_utils.SettingsManager(
+                os.path.join(storage_dir, "settings.json")
+            )
+            settings = settings_manager_instance.get()
+            image_classifier = ImageClassifier(settings)
+
+            rescan_interval = settings.rescan_interval
             if rescan_interval <= 0:
                 logging.info(
                     "Rescanning is disabled, scanner will sleep until settings change."
@@ -162,7 +167,9 @@ def background_scanner_task(
                 logging.info(
                     f"Background scanner performing rescan... (Interval: {rescan_interval}s)"
                 )
-                media_scanner.scan_directory(storage_dir, db_path, rescan=True)
+                media_scanner.scan_directory(
+                    storage_dir, db_path, image_classifier, rescan=True
+                )
                 logging.info("Background rescan complete.")
             except Exception as e:
                 logging.error(f"Error during background scan: {e}", exc_info=True)
@@ -171,7 +178,10 @@ def background_scanner_task(
                 db_utils.close_db_connection()
 
             # Fetch interval again in case it was changed during the scan
-            current_interval = settings_manager_instance.get().rescan_interval
+            current_settings = settings_utils.SettingsManager(
+                os.path.join(storage_dir, "settings.json")
+            ).get()
+            current_interval = current_settings.rescan_interval
             if current_interval > 0:
                 logging.debug(f"Scanner sleeping for {current_interval} seconds.")
                 scanner_wakeup_event.wait(timeout=current_interval)
@@ -692,8 +702,13 @@ def run_flask_app(argv):
         f"Performing initial scan of storage directory: {app.config['STORAGE_DIR']}"
     )
     try:
+        settings = settings_manager.get()
+        image_classifier = ImageClassifier(settings)
         media_scanner.scan_directory(
-            app.config["STORAGE_DIR"], app.config["DATABASE_PATH"], rescan=False
+            app.config["STORAGE_DIR"],
+            app.config["DATABASE_PATH"],
+            image_classifier,
+            rescan=False,
         )
     except Exception as e:
         logging.error(f"Error during initial scan: {e}", exc_info=True)
@@ -709,7 +724,7 @@ def run_flask_app(argv):
     # based on the settings. It no longer depends on a startup flag to be enabled.
     scanner_thread = threading.Thread(
         target=background_scanner_task,
-        args=(app.app_context(), settings_manager),
+        args=(app.app_context(),),
         daemon=True,
     )
     scanner_thread.start()

@@ -246,7 +246,12 @@ def _delete_thumbnail_file(
             )
 
 
-def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None:
+def scan_directory(
+    storage_dir: str,
+    db_path: str,
+    image_classifier: ImageClassifier,
+    rescan: bool = False,
+) -> None:
     if not os.path.isdir(storage_dir):
         logging.error(f"Storage directory not found: {storage_dir}")
         return
@@ -255,10 +260,9 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
     os.makedirs(thumbnail_dir_abs, exist_ok=True)
     logging.info(f"Thumbnail directory ensured at: {thumbnail_dir_abs}")
 
-    settings_manager = SettingsManager(os.path.join(storage_dir, ".settings.json"))
+    settings_manager = SettingsManager(os.path.join(storage_dir, "settings.json"))
     settings = settings_manager.get()
 
-    image_classifier = ImageClassifier(settings)
     geolocator = GeoLocator()
     cities_csv_path = os.path.join(os.path.dirname(__file__), "resources", "cities.csv")
     geolocator.load_cities(cities_csv_path)
@@ -334,7 +338,6 @@ def scan_directory(storage_dir: str, db_path: str, rescan: bool = False) -> None
                 thumbnail_dir_abs,
                 geolocator,
                 image_classifier,
-                settings,
                 filename,
                 db_entry,
             )
@@ -402,7 +405,6 @@ def _process_single_file(
     thumbnail_dir_abs: str,
     geolocator: GeoLocator,
     image_classifier: ImageClassifier,
-    settings: SettingsManager,
     disk_filename: str,
     existing_db_entry_for_path: Optional[Dict] = None,
 ) -> Optional[Dict]:
@@ -429,8 +431,8 @@ def _process_single_file(
         )
 
         if (
-            settings.tagging_model != "Off"
-            and settings.tagging_model != tagging_model_in_db
+            image_classifier.settings.tagging_model != "Off"
+            and image_classifier.settings.tagging_model != tagging_model_in_db
         ):
             tags = image_classifier.classify_image(abs_file_path)
         elif existing_entry_for_sha:
@@ -508,7 +510,7 @@ def _process_single_file(
             "mime_type": mime_type,
             "filesize": filesize,
             "tags": json.dumps(tags) if tags else None,
-            "tagging_model": settings.tagging_model if tags else None,
+            "tagging_model": image_classifier.settings.tagging_model if tags else None,
             # Add a temporary flag for the main scanner function
             "_thumbnail_needed": thumbnail_needed,
             "_abs_file_path": abs_file_path,
