@@ -120,6 +120,10 @@ class TestMediaScannerWithDB(unittest.TestCase):
         if media_scanner.GPS_TAG_ID is not None:
             self.mock_exif_obj_for_gps_jpeg[media_scanner.GPS_TAG_ID] = self.mock_jpeg_gps_info_sub_ifd
 
+        self.mock_image_classifier = mock.Mock()
+        self.mock_image_classifier.settings = mock.Mock()
+        self.mock_image_classifier.settings.tagging_model = "Off"
+
     def tearDown(self):
         db_utils.close_db_connection() # Ensure connection for this thread is closed
         if os.path.exists(self.db_path):
@@ -154,7 +158,7 @@ class TestMediaScannerWithDB(unittest.TestCase):
         empty_db_path = os.path.join(empty_dir, "empty_test_db.sqlite3")
         db_utils.init_db(empty_dir) # This will use empty_dir to form path to empty_test_db.sqlite3
 
-        media_scanner.scan_directory(empty_dir, empty_db_path)
+        media_scanner.scan_directory(empty_dir, empty_db_path, self.mock_image_classifier)
 
         result_from_db = db_utils.get_all_media_files(empty_db_path)
         self.assertEqual(result_from_db, {})
@@ -169,7 +173,7 @@ class TestMediaScannerWithDB(unittest.TestCase):
         # scan_directory should log an error and return without altering DB significantly
         # (it might create thumbnail dir if storage_dir was interpretable as a path segment)
         # For this test, we assume db_path is valid but storage_dir is not.
-        media_scanner.scan_directory(non_existent_dir, self.db_path)
+        media_scanner.scan_directory(non_existent_dir, self.db_path, self.mock_image_classifier)
         result_from_db = db_utils.get_all_media_files(self.db_path)
         self.assertEqual(result_from_db, {}, "DB should be empty if scan target dir doesn't exist.")
 
@@ -197,7 +201,7 @@ class TestMediaScannerWithDB(unittest.TestCase):
             return original_image_open(fp, mode=mode)
 
         with unittest.mock.patch('PIL.Image.open', side_effect=mock_image_open_for_gps_jpeg):
-            media_scanner.scan_directory(self.test_dir, self.db_path, rescan=False)
+            media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=False)
 
         result_from_db = db_utils.get_all_media_files(self.db_path)
         self.assertEqual(len(result_from_db), 6) # img1, vid1, img2_subdir, square, img_exif, img_gps
@@ -226,10 +230,10 @@ class TestMediaScannerWithDB(unittest.TestCase):
         self.assertIsNotNone(data_img_gps)
 
     def test_rescan_no_changes(self):
-        media_scanner.scan_directory(self.test_dir, self.db_path, rescan=False) # Initial scan
+        media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=False) # Initial scan
         initial_db_state = db_utils.get_all_media_files(self.db_path)
 
-        media_scanner.scan_directory(self.test_dir, self.db_path, rescan=True) # Rescan
+        media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=True) # Rescan
         rescan_db_state = db_utils.get_all_media_files(self.db_path)
 
         self.assertEqual(initial_db_state, rescan_db_state)
@@ -239,13 +243,13 @@ class TestMediaScannerWithDB(unittest.TestCase):
 
 
     def test_rescan_add_image_file(self):
-        media_scanner.scan_directory(self.test_dir, self.db_path, rescan=False) # Initial scan
+        media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=False) # Initial scan
         count_before = len(db_utils.get_all_media_files(self.db_path))
 
         new_img_path = create_dummy_file(self.test_dir, "new_image.gif", mtime=time.time()-100, image_details={'size': (50,70), 'format': 'GIF'})
         new_img_hash = calculate_sha256_file(new_img_path)
 
-        media_scanner.scan_directory(self.test_dir, self.db_path, rescan=True) # Rescan
+        media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=True) # Rescan
 
         rescan_db_state = db_utils.get_all_media_files(self.db_path)
         self.assertEqual(len(rescan_db_state), count_before + 1)
@@ -256,7 +260,7 @@ class TestMediaScannerWithDB(unittest.TestCase):
         self._assert_thumbnail_properties(self.thumbnail_dir_path, relative_new_thumb_path, new_img_path, new_img_hash)
 
     def test_rescan_remove_image_file(self):
-        media_scanner.scan_directory(self.test_dir, self.db_path, rescan=False) # Initial scan
+        media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=False) # Initial scan
         count_before = len(db_utils.get_all_media_files(self.db_path))
 
         # Ensure img1 and its thumbnail exist
@@ -266,7 +270,7 @@ class TestMediaScannerWithDB(unittest.TestCase):
         self.assertTrue(os.path.exists(full_thumb_path_img1))
 
         os.remove(self.file_img1) # Remove the source file
-        media_scanner.scan_directory(self.test_dir, self.db_path, rescan=True) # Rescan
+        media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=True) # Rescan
 
         rescan_db_state = db_utils.get_all_media_files(self.db_path)
         self.assertEqual(len(rescan_db_state), count_before - 1)
@@ -275,7 +279,7 @@ class TestMediaScannerWithDB(unittest.TestCase):
 
     def test_rescan_modify_image_mtime_only(self):
         """Test mtime change, SHA same, DB entry updated."""
-        media_scanner.scan_directory(self.test_dir, self.db_path, rescan=False)
+        media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=False)
 
         db_entry_before = db_utils.get_media_file_by_sha(self.db_path, self.hash_img1)
         original_last_modified = db_entry_before['last_modified']
@@ -284,7 +288,7 @@ class TestMediaScannerWithDB(unittest.TestCase):
         new_mtime = time.time() + 200
         os.utime(self.file_img1, (new_mtime, new_mtime))
 
-        media_scanner.scan_directory(self.test_dir, self.db_path, rescan=True)
+        media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=True)
 
         db_entry_after = db_utils.get_media_file_by_sha(self.db_path, self.hash_img1)
         self.assertIsNotNone(db_entry_after)
@@ -298,7 +302,7 @@ class TestMediaScannerWithDB(unittest.TestCase):
     def test_scan_directory_with_gps(self):
         # This test uses the pre-existing image_with_gps.jpg created in setUp
         # It has known coordinates that should resolve to a specific city.
-        media_scanner.scan_directory(self.test_dir, self.db_path, rescan=False)
+        media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=False)
 
         db_entry = db_utils.get_media_file_by_sha(self.db_path, self.hash_img_gps)
         self.assertIsNotNone(db_entry)
@@ -316,42 +320,58 @@ class TestMediaScannerWithDB(unittest.TestCase):
         settings.tagging_model = "Resnet"
         settings_manager.write_settings(settings)
 
-        with mock.patch('media_server.image_classifier.ImageClassifier.classify_image') as mock_classify:
-            mock_classify.return_value = [("tag1", 0.9)]
-            media_scanner.scan_directory(self.test_dir, self.db_path, rescan=False)
+        settings_path = os.path.join(self.test_dir, "settings.json")
+        settings_manager = media_scanner.SettingsManager(settings_path)
+        settings = settings_manager.get()
+        settings.tagging_model = "Resnet"
+        settings_manager.write_settings(settings)
+
+        with mock.patch('media_server.image_classifier.ImageClassifier') as MockImageClassifier:
+            mock_classifier_instance = MockImageClassifier.return_value
+            mock_classifier_instance.classify_image.return_value = [("tag1", 0.9)]
+            mock_classifier_instance.settings.tagging_model = "Resnet"
+
+            media_scanner.scan_directory(self.test_dir, self.db_path, mock_classifier_instance, rescan=False)
 
             # 2. Verify initial state
             db_entry = db_utils.get_media_file_by_sha(self.db_path, self.hash_img1)
+            self.assertIsNotNone(db_entry)
             self.assertEqual(db_entry['tagging_model'], "Resnet")
             self.assertEqual(db_entry['tags'], '[["tag1", 0.9]]')
-            self.assertEqual(mock_classify.call_count, 5) # 5 images
+            self.assertEqual(mock_classifier_instance.classify_image.call_count, 5) # 5 images
 
         # 3. Change settings to Mobilenet
         settings.tagging_model = "Mobilenet"
         settings_manager.write_settings(settings)
 
-        with mock.patch('media_server.image_classifier.ImageClassifier.classify_image') as mock_classify:
-            mock_classify.return_value = [("tag2", 0.8)]
-            media_scanner.scan_directory(self.test_dir, self.db_path, rescan=True)
+        with mock.patch('media_server.image_classifier.ImageClassifier') as MockImageClassifier:
+            mock_classifier_instance = MockImageClassifier.return_value
+            mock_classifier_instance.classify_image.return_value = [("tag2", 0.8)]
+            mock_classifier_instance.settings.tagging_model = "Mobilenet"
+            media_scanner.scan_directory(self.test_dir, self.db_path, mock_classifier_instance, rescan=True)
 
             # 4. Verify updated state
             db_entry = db_utils.get_media_file_by_sha(self.db_path, self.hash_img1)
+            self.assertIsNotNone(db_entry)
             self.assertEqual(db_entry['tagging_model'], "Mobilenet")
             self.assertEqual(db_entry['tags'], '[["tag2", 0.8]]')
-            self.assertEqual(mock_classify.call_count, 5)
+            self.assertEqual(mock_classifier_instance.classify_image.call_count, 5)
 
         # 5. Change settings to Off
         settings.tagging_model = "Off"
         settings_manager.write_settings(settings)
 
-        with mock.patch('media_server.image_classifier.ImageClassifier.classify_image') as mock_classify:
-            media_scanner.scan_directory(self.test_dir, self.db_path, rescan=True)
+        with mock.patch('media_server.image_classifier.ImageClassifier') as MockImageClassifier:
+            mock_classifier_instance = MockImageClassifier.return_value
+            mock_classifier_instance.settings.tagging_model = "Off"
+            media_scanner.scan_directory(self.test_dir, self.db_path, mock_classifier_instance, rescan=True)
 
             # 6. Verify tags are not changed
             db_entry = db_utils.get_media_file_by_sha(self.db_path, self.hash_img1)
+            self.assertIsNotNone(db_entry)
             self.assertEqual(db_entry['tagging_model'], "Mobilenet") # Stays the same
             self.assertEqual(db_entry['tags'], '[["tag2", 0.8]]')
-            mock_classify.assert_not_called()
+            mock_classifier_instance.classify_image.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()

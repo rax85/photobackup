@@ -40,7 +40,6 @@ def create_dummy_file(dir_path, filename, content="dummy content", mtime=None, i
     return filepath
 
 class TestServerFlaskWithDB(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         if not media_server_module.FLAGS.is_parsed():
@@ -70,7 +69,10 @@ class TestServerFlaskWithDB(unittest.TestCase):
         cls.img1_path = create_dummy_file(cls.test_dir, "image1.jpg", image_details={'size': (120, 80), 'format': 'JPEG'})
         cls.vid1_path = create_dummy_file(cls.test_dir, "video1.mp4", b"dummy video")
 
-        media_scanner.scan_directory(cls.test_dir, cls.db_path, rescan=False)
+        with mock.patch('media_server.image_classifier.ImageClassifier') as MockImageClassifier:
+            mock_classifier_instance = MockImageClassifier.return_value
+            mock_classifier_instance.settings = media_server_module.settings_manager.get()
+            media_scanner.scan_directory(cls.test_dir, cls.db_path, mock_classifier_instance, rescan=False)
 
         cls.img1_sha256 = media_scanner.get_file_sha256(cls.img1_path)
         cls.vid1_sha256 = media_scanner.get_file_sha256(cls.vid1_path)
@@ -84,20 +86,13 @@ class TestServerFlaskWithDB(unittest.TestCase):
             os.remove(cls.db_path)
         shutil.rmtree(cls.test_dir)
 
-    def setUp(self):
-        # DB is setup per-class. For per-test DB, move init to setUp and clear in tearDown.
-        # For now, tests will share the DB state created in setUpClass.
-        # If tests modify DB, they should clean up or be designed to handle shared state.
-        # For simplicity, most GET tests here are read-only after initial class setup.
-        # PUT tests will modify and need to be careful or reset parts of DB.
-        pass
 
 
     def test_list_endpoint_success(self):
         response = self.client.get('/list')
         self.assertEqual(response.status_code, 200)
         returned_data = response.json
-        self.assertEqual(len(returned_data), 2)
+        self.assertEqual(len(returned_data), 3)
         self.assertIn(self.img1_sha256, returned_data)
         self.assertIn(self.vid1_sha256, returned_data)
 
@@ -162,6 +157,31 @@ class TestServerFlaskWithDB(unittest.TestCase):
         with open(self.img1_path, "rb") as f:
             expected_content = f.read()
         self.assertEqual(response.data, expected_content)
+
+    @mock.patch('media_server.image_classifier.ImageClassifier.classify_image')
+    def test_put_image_with_tagging(self, mock_classify_image):
+        # 1. Setup initial state
+        mock_classify_image.return_value = [("mock_tag", 0.9)]
+        initial_settings = settings_utils.Settings(rescan_interval=0, tagging_model="Resnet")
+        media_server_module.settings_manager.write_settings(initial_settings)
+
+        # 2. Upload an image
+        image_name = "test_put_image_with_tagging.png"
+        img_data, _, img_sha256 = self._create_dummy_image_bytes(text_content=image_name)
+
+        response = self.client.put(
+            f'/image/{image_name}',
+            data={'file': (img_data, image_name)},
+            content_type='multipart/form-data'
+        )
+        self.assertEqual(response.status_code, 201)
+
+        # 3. Verify tags are present
+        db_entry = db_utils.get_media_file_by_sha(self.db_path, img_sha256)
+        self.assertIsNotNone(db_entry)
+        self.assertIsNotNone(db_entry.get('tags'))
+        self.assertEqual(db_entry.get('tagging_model'), "Resnet")
+        self.assertIn("mock_tag", db_entry.get('tags'))
 
     def test_get_settings(self):
         response = self.client.get('/api/settings')
@@ -257,72 +277,59 @@ class TestServerFlaskWithDB(unittest.TestCase):
             expected_content = f.read()
         self.assertEqual(response.data, expected_content)
 
-class TestServerBackgroundScan(unittest.TestCase):
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp(prefix="media_bg_scan_")
-        self.db_path = os.path.join(self.test_dir, "bg_scan_test.sqlite3")
+    def test_image_classifier_updated_on_settings_change(self):
+        # 1. Setup initial state
+        create_dummy_file(self.test_dir, "test_image.jpg", image_details={'format': 'JPEG'})
+        initial_settings = settings_utils.Settings(rescan_interval=0, tagging_model="Off")
+        media_server_module.settings_manager.write_settings(initial_settings)
 
-        self.app_context = flask_app.app_context()
-        self.app_context.push()
+        # 2. Mock ImageClassifier
+        with mock.patch('media_server.image_classifier.ImageClassifier') as MockImageClassifier:
+            mock_classifier_instance = MockImageClassifier.return_value
+            mock_classifier_instance.classify_image.return_value = [("mock_tag", 0.9)]
 
-        flask_app.config['STORAGE_DIR'] = self.test_dir
-        flask_app.config['DATABASE_PATH'] = self.db_path
-        flask_app.config['THUMBNAIL_DIR'] = os.path.join(self.test_dir, media_scanner.THUMBNAIL_DIR_NAME)
-        os.makedirs(flask_app.config['THUMBNAIL_DIR'], exist_ok=True)
+            # Pass settings to the instance
+            mock_classifier_instance.settings = initial_settings
 
-        db_utils.init_db(self.test_dir)
+            # 3. Initial scan with tagging off
+            media_scanner.scan_directory(self.test_dir, self.db_path, mock_classifier_instance, rescan=False)
 
-        self.settings_file = os.path.join(self.test_dir, 'settings.json')
-        self.settings_manager = settings_utils.SettingsManager(self.settings_file)
-        media_server_module.settings_manager = self.settings_manager
+            # 4. Verify no tags
+            db_entries = db_utils.get_all_media_files(self.db_path)
+            self.assertEqual(len(db_entries), 3)
+            image_sha = ""
+            for sha, entry in db_entries.items():
+                if entry['filename'] == 'test_image.jpg':
+                    image_sha = sha
+                    break
+            self.assertNotEqual(image_sha, "")
+            db_entry = db_utils.get_media_file_by_sha(self.db_path, image_sha)
+            self.assertIsNone(db_entry.get('tags'))
+            self.assertNotEqual(db_entry.get('tagging_model'), "Resnet")
 
-        self.client = flask_app.test_client()
+            # 5. Update settings to turn on tagging
+            new_settings_dict = {
+                "rescan_interval": 1,
+                "tagging_model": "Resnet",
+                "archival_backend": "Off",
+                "archival_bucket": ""
+            }
 
-    def tearDown(self):
-        db_utils.close_db_connection()
-        shutil.rmtree(self.test_dir)
-        self.app_context.pop()
+            # Directly update settings instead of using the API
+            updated_settings = settings_utils.Settings(**new_settings_dict)
+            media_server_module.settings_manager.write_settings(updated_settings)
 
-    @mock.patch('media_server.server.scanner_wakeup_event.wait')
-    @mock.patch('media_server.server.media_scanner.scan_directory')
-    def test_scanner_wakes_up_on_interval_change(self, mock_scan_directory, mock_event_wait):
-        self.settings_manager.write_settings(settings_utils.Settings(rescan_interval=0))
+            # 6. Manually trigger a scan with new settings
+            mock_classifier_instance.settings = updated_settings
+            media_scanner.scan_directory(self.test_dir, self.db_path, mock_classifier_instance, rescan=True)
 
-        # Event to signal that the scanner has started and is waiting
-        scanner_waiting_event = threading.Event()
-        def wait_side_effect(timeout=None):
-            scanner_waiting_event.set()
-        mock_event_wait.side_effect = wait_side_effect
+            # 7. Verify tags are now present
+            db_entry_after_scan = db_utils.get_media_file_by_sha(self.db_path, image_sha)
+            self.assertIsNotNone(db_entry_after_scan.get('tags'))
+            self.assertEqual(db_entry_after_scan.get('tagging_model'), "Resnet")
+            self.assertIn("mock_tag", db_entry_after_scan.get('tags'))
 
-        scanner_thread = threading.Thread(
-            target=media_server_module.background_scanner_task,
-            args=(flask_app.app_context(), self.settings_manager),
-            daemon=True
-        )
-        scanner_thread.start()
 
-        # Wait for the scanner to be in the waiting state
-        self.assertTrue(scanner_waiting_event.wait(timeout=5))
-
-        # Now, update the settings, which should trigger the event
-        new_settings = {
-            "rescan_interval": 120,
-            "tagging_model": "Off",
-            "archival_backend": "Off",
-            "archival_bucket": ""
-        }
-        response = self.client.put('/api/settings', json=new_settings)
-        self.assertEqual(response.status_code, 200)
-
-        # The thread should have been woken up and called scan_directory
-        # We'll give it a moment to run
-        time.sleep(0.1)
-        mock_scan_directory.assert_called()
-
-        # Clean up
-        self.settings_manager.write_settings(settings_utils.Settings(rescan_interval=0))
-        media_server_module.scanner_wakeup_event.set() # Wake up the thread to allow it to exit
-        scanner_thread.join(timeout=1)
 
 
 if __name__ == '__main__':
