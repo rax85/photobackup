@@ -11,6 +11,7 @@ if __name__ == "__main__" and __package__ is None:
         sys.path.insert(0, PROJECT_ROOT_FOR_SERVER)
 
 import dataclasses
+import json
 import threading
 import time
 import datetime
@@ -465,6 +466,12 @@ def put_image(filename):  # filename comes from the <path:filename> URL part
             )
 
     relative_file_path_for_db = os.path.join(upload_subdir_rel, final_filename_on_disk)
+    settings = settings_manager.get()
+    image_classifier = ImageClassifier(settings)
+    tags = None
+    if mime_type_upload and mime_type_upload.startswith("image/"):
+        tags = image_classifier.classify_image(prospective_path_on_disk_abs)
+
     media_data = {
         "sha256_hex": sha256_hash,
         "filename": final_filename_on_disk,  # Name on disk in its upload subfolder
@@ -479,6 +486,8 @@ def put_image(filename):  # filename comes from the <path:filename> URL part
         "longitude": longitude,
         "mime_type": mime_type_upload,
         "filesize": filesize,
+        "tags": json.dumps(tags) if tags else None,
+        "tagging_model": settings.tagging_model if tags else None,
     }
     db_utils.add_or_update_media_file(db_path, media_data)
     logging.info(

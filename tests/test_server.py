@@ -158,6 +158,31 @@ class TestServerFlaskWithDB(unittest.TestCase):
             expected_content = f.read()
         self.assertEqual(response.data, expected_content)
 
+    @mock.patch('media_server.image_classifier.ImageClassifier.classify_image')
+    def test_put_image_with_tagging(self, mock_classify_image):
+        # 1. Setup initial state
+        mock_classify_image.return_value = [("mock_tag", 0.9)]
+        initial_settings = settings_utils.Settings(rescan_interval=0, tagging_model="Resnet")
+        media_server_module.settings_manager.write_settings(initial_settings)
+
+        # 2. Upload an image
+        image_name = "test_put_image_with_tagging.png"
+        img_data, _, img_sha256 = self._create_dummy_image_bytes(text_content=image_name)
+
+        response = self.client.put(
+            f'/image/{image_name}',
+            data={'file': (img_data, image_name)},
+            content_type='multipart/form-data'
+        )
+        self.assertEqual(response.status_code, 201)
+
+        # 3. Verify tags are present
+        db_entry = db_utils.get_media_file_by_sha(self.db_path, img_sha256)
+        self.assertIsNotNone(db_entry)
+        self.assertIsNotNone(db_entry.get('tags'))
+        self.assertEqual(db_entry.get('tagging_model'), "Resnet")
+        self.assertIn("mock_tag", db_entry.get('tags'))
+
     def test_get_settings(self):
         response = self.client.get('/api/settings')
         self.assertEqual(response.status_code, 200)
