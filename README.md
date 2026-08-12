@@ -1,290 +1,143 @@
-# Media Server
+# PhotoBackup · Media Server & Photo Gallery
 
 [![Python application](https://github.com/rax85/photobackup/actions/workflows/python-app.yml/badge.svg)](https://github.com/rax85/photobackup/actions/workflows/python-app.yml)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-A simple web-based media server application that scans a directory for images,
-provides an API to list and view them, and allows new image uploads. It features
-a responsive web interface for browsing and viewing media.
+A high-performance self-hosted media server and modern photo gallery application. It scans a storage directory for photos and videos, extracts rich EXIF timestamps, reverse-geocodes GPS coordinates offline, classifies content with optional AI vision models, generates thumbnails, and serves an interactive Single Page Application (SPA) frontend with Dark & Light theme support.
+
+---
 
 ## Features
 
-*   Scans a specified directory for media files (images).
-*   Generates thumbnails for images.
-*   Provides an HTTP API to list media and serve image files and thumbnails.
-*   Allows image uploads via the API.
-*   Responsive web frontend for browsing the media gallery.
-*   Background rescanning of the media directory (optional).
+* **High-Performance Scanning**: Fast directory traversal, SHA-256 deduplication, and parallel thumbnail generation using Pillow with HEIC/HEIF and video badge support.
+* **Offline Reverse Geocoding**: Automatically maps photo GPS coordinates to the nearest city and country using an offline dataset and Haversine calculations.
+* **Optional AI Vision Tagging**: Categorizes images with pre-trained vision models (ResNet50V2 / MobileNetV3) lazily loaded on demand.
+* **Smart Omni-Search**: Instant search across filenames, cities, countries, tags, and dates without rigid syntax constraints.
+* **Cloud Archival Support**: Modular cloud backup integration for AWS S3 and Google Cloud Storage.
+* **State-of-the-Art SPA Frontend**:
+  * Dark & Light theme modes with automatic system preference detection.
+  * Responsive masonry/justified media gallery with zoom hover micro-interactions.
+  * PhotoSwipe v5 lightbox with full-screen zoom and HTML5 video playback with Range streaming.
+  * Sticky timeline sidebar with live Scrollspy highlighting active months.
+  * Drag-and-drop batch upload dock with real-time file progress and toast notifications.
+
+---
 
 ## Setup and Running
 
 ### Prerequisites
-*   Python 3.x
-*   pip
+* Python 3.10+
+* pip
 
 ### Installation
 
-1.  Clone the repository:
-    ```bash
-    git clone <repository-url>
-    cd <repository-directory>
-    ```
-2.  Install dependencies:
-    ```bash
-    pip install .
-    ```
-    For development, you might prefer:
-    ```bash
-    pip install -e .
-    # If you have development-specific requirements:
-    # pip install -r requirements-dev.txt
-    ```
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   cd photobackup
+   ```
+
+2. Install dependencies:
+   ```bash
+   pip install -e .
+   ```
+   *For optional AI vision tagging and cloud archival:*
+   ```bash
+   pip install -e ".[ml,cloud]"
+   ```
 
 ### Running the Server
 
-Execute the server script from the root of the project:
-
+Start the server pointing to your media library:
 ```bash
-python media_server/server.py --storage_dir=/path/to/your/media --port=8000 [--rescan_interval=300]
+python media_server/server.py --storage_dir=/path/to/your/media --port=8000
 ```
 
 **Command-line arguments:**
+* `--storage_dir`: (Required) Path to directory containing photos and videos.
+* `--port`: (Optional) Port number for server (default `8000`).
+* `--db_name`: (Optional) SQLite cache filename inside storage directory (default `media_cache.sqlite3`).
 
-*   `--storage_dir`: (Required) The directory containing media files to scan.
-*   `--port`: (Optional) The port number for the server to listen on. Defaults to `8000`.
-*   `--rescan_interval`: (Optional) Interval in seconds for automatically rescanning the storage directory in the background. If `0` or not provided, background rescanning is disabled. For example, `--rescan_interval 300` will rescan every 5 minutes.
+Open `http://localhost:8000` in your web browser.
 
-Once the server is running, you can access the web interface by navigating to `http://localhost:<port>` in your web browser (e.g., `http://localhost:8000`).
+---
 
 ## API Specification
 
-The server exposes the following HTTP API endpoints:
-
 ### `GET /`
-*   **Description:** Serves the main web application (`index.html`).
-*   **Request:** None.
-*   **Success Response:**
-    *   `200 OK`
-    *   Body: HTML content of the web application.
+Serves the web application (`index.html`).
 
 ### `GET /list`
-*   **Description:** Retrieves metadata for all media items currently in the server's cache.
-*   **Request:** None.
-*   **Success Response:**
-    *   `200 OK`
-    *   Body (JSON): An object where keys are SHA256 hashes of media items, and values are objects containing their metadata:
-        *   `filename`: (string) Current filename on disk.
-        *   `original_filename`: (string) Original filename at the time of first scan or upload.
-        *   `file_path`: (string) Relative path to the media file from the `storage_dir`.
-        *   `last_modified`: (float) Unix timestamp of the file's last modification time.
-        *   `original_creation_date`: (float) Unix timestamp of the media's original creation (from EXIF if available, otherwise file system creation time).
-        *   `thumbnail_file`: (string, optional) Relative path to the thumbnail within the thumbnail directory (e.g., `.thumbnails/ab/hash.png`). Null if no thumbnail (e.g., for videos or if generation failed).
-        *   `width`: (integer, optional) Width of the image in pixels. Null for non-image types or if not determined.
-        *   `height`: (integer, optional) Height of the image in pixels. Null for non-image types or if not determined.
-        *   `latitude`: (float, optional) GPS latitude in decimal degrees, if available from EXIF. Null otherwise.
-        *   `longitude`: (float, optional) GPS longitude in decimal degrees (negative for West/South), if available from EXIF. Null otherwise.
-        *   `city`: (string, optional) City name derived from GPS coordinates. Null if not available.
-        *   `country`: (string, optional) Country name derived from GPS coordinates. Null if not available.
-        *   `tags`: (string, optional) A JSON string of a list of tags for the image. Null if not available.
-        ```json
-        {
-          "sha256_hash_1": {
-            "filename": "image.jpg",
-            "original_filename": "original_image_name.jpg",
-            "file_path": "relative/path/to/image.jpg",
-            "last_modified": 1678886400.0,
-            "original_creation_date": 1678880000.0,
-            "thumbnail_file": "ab/abcdef123.png",
-            "width": 1920,
-            "height": 1080,
-            "latitude": 34.0522,
-            "longitude": -118.2437,
-            "city": "Los Angeles",
-            "country": "United States",
-            "tags": "['cat', 'tabby']"
-          },
-          "another_sha_hash": {
-            "filename": "photo_without_gps.png",
-            "original_filename": "photo_without_gps.png",
-            "file_path": "subdir/photo_without_gps.png",
-            "last_modified": 1678890000.0,
-            "original_creation_date": 1678881000.0,
-            "thumbnail_file": "cd/anotherhash.png",
-            "width": 800,
-            "height": 600,
-            "latitude": null,
-            "longitude": null,
-            "city": null,
-            "country": null,
-            "tags": null
-          }
-          // ... more items
-        }
-        ```
+Retrieves all cached media items ordered by creation date descending.
+* **Query Parameters**: `limit` (int, optional), `offset` (int, optional)
+* **Response**: JSON dictionary mapping SHA-256 hashes to item metadata:
+  ```json
+  {
+    "sha256_hash": {
+      "filename": "photo.jpg",
+      "original_filename": "IMG_0001.jpg",
+      "file_path": "photos/photo.jpg",
+      "last_modified": 1678886400.0,
+      "original_creation_date": 1678880000.0,
+      "thumbnail_file": "ab/sha256_hash.png",
+      "width": 1920,
+      "height": 1080,
+      "latitude": 34.0522,
+      "longitude": -118.2437,
+      "city": "Los Angeles",
+      "country": "United States",
+      "mime_type": "image/jpeg",
+      "filesize": 2048500,
+      "tags": "[\"cat\", \"tabby\"]"
+    }
+  }
+  ```
+
+### `GET /api/search`
+Smart multi-field search and faceted filtering.
+* **Query Parameters**: `q` (string), `type` (`image` | `video` | `all`), `limit` (int), `offset` (int)
+* **Response**: Filtered JSON media dictionary.
+
+### `GET /api/stats`
+Returns total items count, photo/video breakdown, storage size, date span, and location metrics.
+
+### `POST /api/scan`
+Triggers an immediate background rescan of the storage directory.
 
 ### `GET /list/date/<date_str>`
-*   **Description:** Retrieves media items for a specific date.
-*   **Request:**
-    *   Path Parameter: `<date_str>` in `YYYY-MM-DD` format.
-*   **Success Response:**
-    *   `200 OK`
-    *   Body (JSON): Same format as `GET /list`.
-*   **Error Responses:**
-    *   `400 Bad Request`: "Invalid date format. Please use YYYY-MM-DD."
+Retrieves media files for a specific date (`YYYY-MM-DD`).
 
-### `GET /list/daterange/<start_date_str>/<end_date_str>`
-*   **Description:** Retrieves media items within a date range.
-*   **Request:**
-    *   Path Parameters: `<start_date_str>` and `<end_date_str>` in `YYYY-MM-DD` format.
-*   **Success Response:**
-    *   `200 OK`
-    *   Body (JSON): Same format as `GET /list`.
-*   **Error Responses:**
-    *   `400 Bad Request`: "Invalid date format. Please use YYYY-MM-DD." or "Start date must be before end date."
+### `GET /list/daterange/<start_date>/<end_date>`
+Retrieves media files within a date range (`YYYY-MM-DD`).
 
-### `GET /list/location/<city>` and `GET /list/location/<city>/<country>`
-*   **Description:** Retrieves media items for a specific location.
-*   **Request:**
-    *   Path Parameters: `<city>` and optional `<country>`.
-*   **Success Response:**
-    *   `200 OK`
-    *   Body (JSON): Same format as `GET /list`.
+### `GET /list/location/<city>[/<country>]`
+Retrieves media files for a city and optional country.
 
 ### `PUT /image/<path:filename>`
-*   **Description:** Uploads a new image file. The `<filename>` in the URL path is a suggestion for the stored filename (it will be sanitized).
-*   **Request:**
-    *   Method: `PUT`
-    *   Path Parameter: `<filename>` (e.g., `my_photo.jpg`)
-    *   Body: `multipart/form-data` with a single file part named `file`.
-        *   Example using `curl`: `curl -X PUT -F "file=@/path/to/local/image.jpg" http://localhost:8000/image/my_photo.jpg`
-*   **Success Response (201 Created - New image uploaded):**
-    *   `201 Created`
-    *   Body (JSON): Metadata of the successfully uploaded image.
-        ```json
-        {
-          "message": "Image uploaded successfully.",
-          "sha256": "sha256_hash_of_uploaded_image",
-          "filename": "stored_filename.jpg", // Actual filename on disk after sanitization/deduplication
-          "file_path": "uploads/YYYYMMDD/stored_filename.jpg", // Relative to storage_dir
-          "thumbnail_file": "ab/sha256_hash.png", // Relative path within thumbnail_dir
-          "width": 1920, // Width of the uploaded image
-          "height": 1080 // Height of the uploaded image
-        }
-        ```
-*   **Success Response (200 OK - Image content already exists):**
-    *   `200 OK`
-    *   Body (JSON): Metadata of the existing image if the uploaded content matches a known SHA256 hash.
-        ```json
-        {
-          "message": "Image content already exists.",
-          "sha256": "sha256_hash_of_existing_image",
-          "filename": "existing_filename.jpg",
-          "file_path": "path/to/existing_filename.jpg"
-          // May also include width, height, thumbnail_file if available in cache for existing item
-        }
-        ```
-*   **Error Responses:**
-    *   `400 Bad Request`: If no `file` part in request, no file selected, invalid file type (allowed: 'png', 'jpg', 'jpeg', 'gif'), or invalid file path. Response body is JSON: `{"error": "Error description"}`.
-    *   `500 Internal Server Error`: If there's an issue saving the file or a server configuration error. Response body is JSON: `{"error": "Error description"}`.
+Uploads a new media file (`multipart/form-data` with `file` part). Saves to `uploads/YYYYMMDD/<filename>`.
 
-### `GET /image/<string:sha256_hex>`
-*   **Description:** Serves the original image file based on its SHA256 hash.
-*   **Request:**
-    *   Path Parameter: `<sha256_hex>` (64-character hexadecimal string).
-*   **Success Response:**
-    *   `200 OK`
-    *   Body: Binary image data with appropriate `Content-Type` (e.g., `image/jpeg`, `image/png`).
-*   **Error Responses:**
-    *   `400 Bad Request`: "Invalid SHA256 format." (JSON body with `{"error": "description"}`)
-    *   `404 Not Found`: If image SHA or corresponding file not found. (JSON body with `{"error": "description"}`)
-    *   `500 Internal Server Error`: Server configuration or metadata issues. (JSON body with `{"error": "description"}`)
+### `GET /image/<sha256_hex>`
+Serves original media binary with HTTP `Range` streaming support (for videos and high-res images).
 
-### `GET /image/sha256/<string:sha256_hex>`
-*   **Description:** Alias for `GET /image/<string:sha256_hex>`. Serves an image based on its SHA256 hash.
-*   **Details:** Same request, success, and error responses as `GET /image/<string:sha256_hex>`.
+### `GET /thumbnail/<sha256_hex>`
+Serves proportional 256x256 PNG thumbnail.
 
-### `GET /api/settings`
-*   **Description:** Retrieves the current application settings.
-*   **Request:** None.
-*   **Success Response:**
-    *   `200 OK`
-    *   Body (JSON): An object containing the current settings:
-        ```json
-        {
-          "rescan_interval": 600,
-          "tagging_model": "Off",
-          "archival_backend": "Off",
-          "archival_bucket": ""
-        }
-        ```
+### `GET /api/settings` & `PUT /api/settings`
+Retrieves or updates application settings (`rescan_interval`, `tagging_model`, `archival_backend`, `archival_bucket`).
 
-### `PUT /api/settings`
-*   **Description:** Updates the application settings.
-*   **Request:**
-    *   Method: `PUT`
-    *   Body: A JSON object with the settings to update.
-        ```json
-        {
-          "rescan_interval": 1200,
-          "tagging_model": "Resnet"
-        }
-        ```
-*   **Success Response (200 OK):**
-    *   `200 OK`
-    *   Body (JSON): The updated settings object.
-*   **Error Responses:**
-    *   `400 Bad Request`: If the request body is not a valid JSON object or if the settings format is invalid.
+### `POST /api/archival/test`
+Tests connectivity to configured cloud archival bucket.
 
-### `GET /thumbnail/<string:sha256_hex>`
-*   **Description:** Serves a generated thumbnail (PNG format) for the image specified by its SHA256 hash.
-*   **Request:**
-    *   Path Parameter: `<sha256_hex>` (64-character hexadecimal string).
-*   **Success Response:**
-    *   `200 OK`
-    *   Body: PNG image data (`Content-Type: image/png`).
-*   **Error Responses:**
-    *   `400 Bad Request`: "Invalid SHA256 format." (JSON body with `{"error": "description"}`)
-    *   `404 Not Found`: If thumbnail not found (e.g., SHA unknown, original is not an image, or thumbnail generation failed). (JSON body with `{"error": "description"}`)
-    *   `500 Internal Server Error`: Server configuration issues (e.g., thumbnail directory not configured). (JSON body with `{"error": "description"}`)
+---
 
-## Web Frontend
+## Running Tests
 
-The application includes a responsive web frontend for browsing and interacting with the media. It is served from the `web/` directory relative to the project root.
+Run the full automated test suite with pytest:
+```bash
+pytest -v
+```
 
-**Key Files:**
-*   `web/index.html`: The main HTML file that structures the single-page application.
-*   `web/css/style.css`: Contains all custom styles for the application's appearance and layout.
-*   `web/js/main.js`: Core client-side JavaScript that handles API interactions, dynamic content rendering, and user interface logic.
-*   `web/photoswipe.css`, `web/js/photoswipe-lightbox.esm.js`, `web/js/photoswipe.esm.js`: Files for the PhotoSwipeJs image lightbox library.
-
-**Features:**
-
-*   **Gallery View:**
-    *   Displays media items as thumbnails in a responsive grid that adjusts to screen size.
-    *   Images are grouped chronologically by month and year of their original creation date, with clear visual dividers.
-    *   Thumbnail images are lazy-loaded to improve initial page load performance.
-*   **Image Lightbox:**
-    *   Utilizes PhotoSwipeJs to provide a rich, full-screen image viewing experience.
-    *   Supports touch gestures for navigation on mobile devices, keyboard controls on desktop, and pinch/scroll zooming.
-*   **Date Navigation:**
-    *   A dedicated navigation panel allows users to quickly jump to specific months/years within the gallery.
-    *   On desktop views, this panel is a sticky sidebar.
-    *   On mobile views, it transforms into a collapsible off-canvas drawer, accessible via a toggle button in the header. The drawer also includes its own close button.
-*   **Responsive Design:**
-    *   The entire interface is designed to be responsive, providing an optimal viewing experience on desktops, tablets, and mobile phones.
-*   **Image Upload:**
-    *   A Floating Action Button (FAB) is persistently displayed in the bottom-right corner, allowing users to easily initiate image uploads.
-    *   A modal dialog shows the progress of file uploads.
-    *   The gallery view automatically refreshes to include newly uploaded images upon successful completion.
-*   **Search:**
-    *   A search box in the header allows filtering the gallery.
-    *   Supported queries: `date: YYYY-MM-DD`, `between: YYYY-MM-DD, YYYY-MM-DD`, and `location: city`.
-    *   A reset button clears the search and restores the full gallery view.
-
-**Technologies Used (Frontend):**
-*   HTML5
-*   CSS3 (including Flexbox and Grid for layout)
-*   JavaScript (ES Modules)
-*   PhotoSwipeJs (for image lightbox)
-
-(Any other existing sections like License, Contributing, etc., would ideally be preserved if they were below the API section in the old README or if they are standard project sections)
+Run code style and lint checks:
+```bash
+flake8 media_server tests
+```

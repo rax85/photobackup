@@ -1,7 +1,10 @@
 import csv
 from dataclasses import dataclass
-from math import radians, sin, cos, sqrt, atan2
+from math import atan2, cos, radians, sin, sqrt
+import os
 from threading import Lock
+from typing import List, Optional
+from absl import logging
 
 
 @dataclass
@@ -10,15 +13,19 @@ class City:
     country: str
     latitude: float
     longitude: float
+    lat_rad: float = 0.0
+    lon_rad: float = 0.0
+
+    def __post_init__(self):
+        if self.lat_rad == 0.0 and self.lon_rad == 0.0:
+            self.lat_rad = radians(self.latitude)
+            self.lon_rad = radians(self.longitude)
 
 
 class GeoLocator:
     """
-    A singleton class for finding the nearest city to a given GPS coordinate.
-
-    This class loads a list of cities from a CSV file and provides a method
-    to find the closest city to a given latitude and longitude. It uses the
-        Haversine formula to calculate distances.
+    A thread-safe singleton for finding the nearest city to a given GPS coordinate
+    using the Haversine distance formula against an offline city database.
     """
 
     _instance = None
@@ -32,82 +39,87 @@ class GeoLocator:
         return cls._instance
 
     def __init__(self):
-        """
-        Initializes the GeoLocator instance.
+        """Initializes the GeoLocator instance."""
+        if not hasattr(self, "initialized"):
+            self.cities: List[City] = []
+            self.loaded = False
+            self.initialized = True
 
-        This method is called only once when the singleton instance is created.
-        It initializes the list of cities and a flag to track if the city
-        data has been loaded.
+    def load_cities(self, csv_file: str) -> None:
         """
-        self.cities = []
-        self.loaded = False
-
-    def load_cities(self, csv_file):
-        """
-        Loads city data from a CSV file into memory.
-
-        This method is thread-safe and ensures that the city data is loaded
-        only once. The CSV file should have columns for city name, latitude,
-        longitude, and country.
+        Loads city data from a CSV file into memory with precomputed radians.
 
         Args:
             csv_file: The path to the CSV file containing city data.
         """
-        if self.loaded:
+        if not os.path.exists(csv_file):
+            logging.warning(f"GeoLocator CSV file not found: {csv_file}")
             return
-        with self._lock:
-            if self.loaded:
-                return
-            with open(csv_file, "r") as f:
-                reader = csv.reader(f)
-                next(reader)  # Skip header
-                for row in reader:
-                    self.cities.append(
-                        City(
-                            name=row[0],
-                            latitude=float(row[1]),
-                            longitude=float(row[2]),
-                            country=row[3],
-                        )
-                    )
-            self.loaded = True
 
-    def nearest_city(self, latitude, longitude):
+        with self._lock:
+            # Re-read if empty or reloading from another file in tests
+            cities_list = []
+            try:
+                with open(csv_file, "r", encoding="utf-8") as f:
+                    reader = csv.reader(f)
+                    next(reader, None)  # Skip header
+                    for row in reader:
+                        if len(row) >= 4:
+                            try:
+                                lat = float(row[1])
+                                lon = float(row[2])
+                                cities_list.append(
+                                    City(
+                                        name=row[0],
+                                        latitude=lat,
+                                        longitude=lon,
+                                        country=row[3],
+                                        lat_rad=radians(lat),
+                                        lon_rad=radians(lon),
+                                    )
+                                )
+                            except (ValueError, TypeError):
+                                continue
+                self.cities = cities_list
+                self.loaded = True
+                logging.info(
+                    f"Loaded {len(self.cities)} cities for offline geolocator."
+                )
+            except Exception as e:
+                logging.error(f"Failed to load cities from {csv_file}: {e}")
+
+    def nearest_city(self, latitude: float, longitude: float) -> Optional[City]:
         """
         Finds the nearest city to the given latitude and longitude.
 
         Args:
-            latitude: The latitude of the location.
-            longitude: The longitude of the location.
+            latitude: The latitude in decimal degrees.
+            longitude: The longitude in decimal degrees.
 
         Returns:
-            A `City` object representing the nearest city, or None if no cities
-            are loaded.
+            A City object representing the closest city, or None if no cities loaded.
         """
         if not self.cities:
             return None
+
+        lat1 = radians(latitude)
+        lon1 = radians(longitude)
 
         min_distance = float("inf")
         closest_city = None
 
         for city in self.cities:
-            distance = self._haversine_distance(
-                latitude, longitude, city.latitude, city.longitude
+            dlon = city.lon_rad - lon1
+            dlat = city.lat_rad - lat1
+            a = (
+                sin(dlat / 2.0) ** 2
+                + cos(lat1) * cos(city.lat_rad) * sin(dlon / 2.0) ** 2
             )
+            c = 2.0 * atan2(sqrt(a), sqrt(max(0.0, 1.0 - a)))
+            distance = 6371.0 * c
+
             if distance < min_distance:
                 min_distance = distance
                 closest_city = city
 
         return closest_city
-
-    def _haversine_distance(self, lat1, lon1, lat2, lon2):
-        # Convert latitude and longitude from degrees to radians
-        lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-
-        # Haversine formula
-        dlon = lon2 - lon1
-        dlat = lat2 - lat1
-        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-        c = 2 * atan2(sqrt(a), sqrt(1 - a))
-        distance = 6371 * c  # Radius of earth in kilometers
-        return distance
