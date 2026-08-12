@@ -169,6 +169,10 @@ function renderGallery(items) {
             link.dataset.mimeType = item.mime_type || '';
             link.dataset.filename = item.filename || '';
 
+            if (isVideo) {
+                link.dataset.type = 'html';
+            }
+
             // Thumbnail Image
             const img = document.createElement('img');
             img.src = `/thumbnail/${item.sha256}`;
@@ -335,39 +339,49 @@ function initPhotoSwipe() {
     AppState.lightbox.addFilter('itemData', (itemData) => {
         const el = itemData.element;
         if (el && el.dataset.isVideo === 'true') {
+            itemData.type = 'html';
             itemData.isVideo = true;
             itemData.videoSrc = el.href;
             itemData.mimeType = el.dataset.mimeType || 'video/mp4';
+            itemData.html = `
+                <div class="pswp-video-container">
+                    <video class="pswp-video-player pswp-prevent-swipe" controls autoplay playsinline preload="metadata">
+                        <source src="${el.href}" type="${itemData.mimeType}">
+                        Your browser does not support HTML5 video.
+                    </video>
+                </div>
+            `;
         }
         return itemData;
     });
 
-    AppState.lightbox.on('contentLoad', (e) => {
-        const { content } = e;
-        if (content.data.isVideo) {
-            e.preventDefault();
-            const container = document.createElement('div');
-            container.className = 'pswp-video-container';
-            const video = document.createElement('video');
-            video.className = 'pswp-video-player';
-            video.controls = true;
-            video.autoplay = true;
-            video.playsInline = true;
-            video.src = content.data.videoSrc;
-            container.appendChild(video);
-            content.element = container;
+    // Prevent zooming video slides
+    AppState.lightbox.addFilter('isContentZoomable', (isZoomable, content) => {
+        if (content && content.data && content.data.isVideo) {
+            return false;
         }
+        return isZoomable;
     });
 
-    AppState.lightbox.on('contentDestroy', (e) => {
-        const { content } = e;
-        if (content.data.isVideo && content.element) {
-            const video = content.element.querySelector('video');
-            if (video) {
+    // Pause videos when changing slide or closing
+    AppState.lightbox.on('change', () => {
+        const pswp = AppState.lightbox.pswp;
+        if (!pswp) return;
+        document.querySelectorAll('.pswp-video-player').forEach(video => {
+            const currElement = pswp.currSlide?.content?.element;
+            if (!currElement || !currElement.contains(video)) {
                 video.pause();
-                video.src = '';
+            } else {
+                video.play().catch(() => {});
             }
-        }
+        });
+    });
+
+    AppState.lightbox.on('close', () => {
+        document.querySelectorAll('.pswp-video-player').forEach(video => {
+            video.pause();
+            video.src = '';
+        });
     });
 
     // Custom Caption Overlay
