@@ -345,10 +345,7 @@ function initPhotoSwipe() {
             itemData.mimeType = el.dataset.mimeType || 'video/mp4';
             itemData.html = `
                 <div class="pswp-video-container">
-                    <video class="pswp-video-player pswp-prevent-swipe" controls autoplay playsinline preload="metadata">
-                        <source src="${el.href}" type="${itemData.mimeType}">
-                        Your browser does not support HTML5 video.
-                    </video>
+                    <video class="pswp-video-player pswp-prevent-swipe" src="${el.href}" controls autoplay playsinline preload="auto"></video>
                 </div>
             `;
         }

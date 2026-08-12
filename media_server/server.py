@@ -453,9 +453,22 @@ def get_image(sha256_hex):
     ) and full_file_path != os.path.normpath(storage_dir_abs):
         abort(400, description="Invalid file path generated.")
 
+    ext = os.path.splitext(file_path_relative)[1].lower()
+    mimetype = None
+    if ext in {".mov", ".mp4", ".m4v"}:
+        mimetype = "video/mp4"
+    elif ext == ".webm":
+        mimetype = "video/webm"
+    elif ext in {".jpg", ".jpeg"}:
+        mimetype = "image/jpeg"
+    elif ext == ".png":
+        mimetype = "image/png"
+    elif ext in {".heic", ".heif"}:
+        mimetype = "image/heic"
+
     try:
         return send_from_directory(
-            storage_dir_abs, file_path_relative, conditional=True
+            storage_dir_abs, file_path_relative, mimetype=mimetype, conditional=True
         )
     except NotFound:
         abort(404, description="Image file not found on disk.")
