@@ -120,11 +120,14 @@ class TestServerFlaskWithDB(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content_type, "image/png")
 
-    def test_get_thumbnail_not_found_for_video(self):
+    def test_get_thumbnail_video_success(self):
         response = self.client.get(f"/thumbnail/{self.vid1_sha256}")
-        self.assertEqual(
-            response.status_code, 404
-        )  # Videos don't have thumbs by default
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content_type, "image/png")
+
+    def test_get_thumbnail_unknown_sha(self):
+        response = self.client.get(f"/thumbnail/{'a' * 64}")
+        self.assertEqual(response.status_code, 404)
 
     def _create_dummy_image_bytes(self, text_content="dummy_image", format="PNG"):
         img_byte_arr = io.BytesIO()

@@ -332,7 +332,7 @@ class TestMediaScannerWithDB(unittest.TestCase):
         # Check video1.mp4
         data_vid1 = result_from_db.get(self.hash_vid1)
         self.assertIsNotNone(data_vid1)
-        self.assertIsNone(data_vid1["thumbnail_file"])
+        self.assertIsNotNone(data_vid1["thumbnail_file"])
 
         # Check image_with_exif.jpg
         data_img_exif = result_from_db.get(self.hash_img_exif)

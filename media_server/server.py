@@ -463,7 +463,7 @@ def get_image(sha256_hex):
 
 @app.route("/thumbnail/<string:sha256_hex>", methods=["GET"])
 def get_thumbnail(sha256_hex):
-    """Serves generated thumbnail image."""
+    """Serves generated thumbnail image, generating on demand if needed."""
     if not (
         len(sha256_hex) == 64 and all(c in "0123456789abcdefABCDEF" for c in sha256_hex)
     ):
@@ -473,23 +473,47 @@ def get_thumbnail(sha256_hex):
     if not db_entry:
         abort(404, description="Image SHA not found in DB, so no thumbnail.")
 
-    thumbnail_relative_path = db_entry.get("thumbnail_file")
-    if not thumbnail_relative_path:
-        mime_type = db_entry.get("mime_type")
-        if mime_type and mime_type.startswith("video/"):
-            abort(
-                404,
-                description=f"Thumbnails not supported for video type {mime_type} yet, or this video has no thumbnail.",
-            )
-        abort(404, description="Thumbnail not available for this item.")
-
     thumbnail_dir_abs = app.config["THUMBNAIL_DIR"]
     if not os.path.isdir(thumbnail_dir_abs):
-        abort(500, description="Thumbnail directory misconfigured or missing.")
+        os.makedirs(thumbnail_dir_abs, exist_ok=True)
 
-    full_thumb_path = os.path.normpath(
-        os.path.join(thumbnail_dir_abs, thumbnail_relative_path)
+    thumbnail_relative_path = db_entry.get("thumbnail_file")
+    storage_dir_abs = app.config["STORAGE_DIR"]
+    file_path_relative = db_entry.get("file_path")
+    full_source_path = (
+        os.path.normpath(os.path.join(storage_dir_abs, file_path_relative))
+        if file_path_relative
+        else None
     )
+
+    full_thumb_path = (
+        os.path.normpath(os.path.join(thumbnail_dir_abs, thumbnail_relative_path))
+        if thumbnail_relative_path
+        else None
+    )
+
+    if not full_thumb_path or not os.path.isfile(full_thumb_path):
+        if full_source_path and os.path.isfile(full_source_path):
+            thumbnail_relative_path = media_scanner.generate_thumbnail(
+                full_source_path, thumbnail_dir_abs, sha256_hex
+            )
+            if thumbnail_relative_path:
+                db_utils.update_media_file_fields(
+                    app.config["DATABASE_PATH"],
+                    sha256_hex,
+                    {"thumbnail_file": thumbnail_relative_path},
+                )
+                full_thumb_path = os.path.normpath(
+                    os.path.join(thumbnail_dir_abs, thumbnail_relative_path)
+                )
+
+    if (
+        not thumbnail_relative_path
+        or not full_thumb_path
+        or not os.path.isfile(full_thumb_path)
+    ):
+        abort(404, description="Thumbnail not available for this item.")
+
     if not full_thumb_path.startswith(os.path.normpath(thumbnail_dir_abs) + os.sep):
         abort(400, description="Invalid thumbnail path.")
 

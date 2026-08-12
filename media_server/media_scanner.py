@@ -1,9 +1,13 @@
 import concurrent.futures
 from datetime import datetime
 import hashlib
+import io
 import json
 import mimetypes
 import os
+import shutil
+import subprocess
+import tempfile
 from typing import Any, Dict, Optional, Set, Tuple
 from absl import logging
 from PIL import ExifTags, Image, ImageDraw, ImageOps
@@ -41,13 +45,14 @@ THUMBNAIL_SIZE = (256, 256)
 THUMBNAIL_EXTENSION = ".png"
 
 
-def _convert_dms_to_decimal(dms_tuple: Tuple[Any, ...], ref: str) -> Optional[float]:
+def _convert_dms_to_decimal(
+    dms_tuple: Tuple[Any, ...], ref: str
+) -> Optional[float]:
     """Converts GPS DMS (Degrees, Minutes, Seconds) to decimal degrees."""
     if not dms_tuple or len(dms_tuple) != 3:
         return None
 
     try:
-
         def to_float(val):
             if isinstance(val, tuple) and len(val) == 2:
                 return float(val[0]) / float(val[1]) if val[1] != 0 else 0.0
@@ -125,7 +130,9 @@ def get_file_sha256(file_path: str) -> Optional[str]:
 def is_media_file(file_path: str) -> bool:
     """Checks if a file is an image or video based on MIME type or extension."""
     mime_type, _ = mimetypes.guess_type(file_path)
-    if mime_type and (mime_type.startswith("image/") or mime_type.startswith("video/")):
+    if mime_type and (
+        mime_type.startswith("image/") or mime_type.startswith("video/")
+    ):
         return True
     ext = os.path.splitext(file_path)[1].lower()
     return ext in {
@@ -144,17 +151,102 @@ def is_media_file(file_path: str) -> bool:
     }
 
 
+def _is_plausible_video_binary(file_path: str) -> bool:
+    """Fast check if file has plausible video binary headers."""
+    try:
+        if not os.path.isfile(file_path) or os.path.getsize(file_path) < 32:
+            return False
+        with open(file_path, "rb") as f:
+            header = f.read(32)
+        if len(header) < 16:
+            return False
+        # MP4/MOV: box type in header[4:8]
+        if header[4:8] in {b"ftyp", b"moov", b"mdat", b"wide", b"free", b"skip"}:
+            return True
+        # AVI: RIFF ... AVI
+        if header.startswith(b"RIFF") and b"AVI" in header[:16]:
+            return True
+        # Matroska / WebM
+        if header.startswith(b"\x1a\x45\xdf\xa3"):
+            return True
+        # MPEG
+        if header.startswith(b"\x00\x00\x01\xba") or header.startswith(b"\x00\x00\x01\xb3"):
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _extract_video_frame(video_path: str) -> Optional[Image.Image]:
+    """
+    Extracts a representative video frame using ffmpeg or macOS QuickLook.
+    """
+    if not _is_plausible_video_binary(video_path):
+        return None
+
+    # 1. Try ffmpeg CLI if installed
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path:
+        try:
+            cmd = [
+                ffmpeg_path,
+                "-ss",
+                "00:00:01",
+                "-i",
+                video_path,
+                "-vframes",
+                "1",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "png",
+                "-loglevel",
+                "quiet",
+                "pipe:1",
+            ]
+            proc = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=4
+            )
+            if proc.returncode == 0 and proc.stdout:
+                return Image.open(io.BytesIO(proc.stdout)).convert("RGBA")
+        except Exception:
+            pass
+
+    # 2. Try macOS qlmanage
+    qlmanage_path = shutil.which("qlmanage")
+    if qlmanage_path:
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                cmd = [qlmanage_path, "-t", "-s", "512", "-o", tmpdir, video_path]
+                proc = subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=4,
+                )
+                if proc.returncode == 0:
+                    for root, _, files in os.walk(tmpdir):
+                        for f in files:
+                            if f.lower().endswith((".png", ".jpg", ".jpeg")):
+                                cand_path = os.path.join(root, f)
+                                with Image.open(cand_path) as img:
+                                    return img.copy().convert("RGBA")
+        except Exception:
+            pass
+
+    return None
+
+
 def _create_video_poster_thumbnail(
     output_path: str, filename: str, target_size: Tuple[int, int]
 ) -> None:
     """Generates a high-quality video placeholder thumbnail."""
     width, height = target_size
-    img = Image.new("RGBA", target_size, (26, 32, 44, 255))
+    img = Image.new("RGBA", target_size, (17, 24, 39, 255))
     draw = ImageDraw.Draw(img)
 
-    # Draw subtle background grid or circular play icon
-    center_x, center_y = width // 2, height // 2
-    radius = 36
+    center_x, center_y = width // 2, height // 2 - 10
+    radius = 32
     draw.ellipse(
         [
             center_x - radius,
@@ -167,15 +259,13 @@ def _create_video_poster_thumbnail(
         width=2,
     )
 
-    # Draw play triangle
     tri_points = [
-        (center_x - 10, center_y - 16),
-        (center_x - 10, center_y + 16),
-        (center_x + 16, center_y),
+        (center_x - 8, center_y - 14),
+        (center_x - 8, center_y + 14),
+        (center_x + 14, center_y),
     ]
     draw.polygon(tri_points, fill=(255, 255, 255, 255))
 
-    # Extension badge
     ext = os.path.splitext(filename)[1].upper().replace(".", "") or "VIDEO"
     badge_w, badge_h = 60, 20
     badge_x = (width - badge_w) // 2
@@ -183,7 +273,7 @@ def _create_video_poster_thumbnail(
     draw.rounded_rectangle(
         [badge_x, badge_y, badge_x + badge_w, badge_y + badge_h],
         radius=4,
-        fill=(15, 23, 42, 200),
+        fill=(30, 41, 59, 230),
     )
     draw.text((badge_x + 10, badge_y + 4), ext, fill=(255, 255, 255, 255))
     img.save(output_path, "PNG")
@@ -229,17 +319,30 @@ def generate_thumbnail(
             is_video = True
 
     if is_video:
+        extracted = _extract_video_frame(source_media_path)
+        if extracted:
+            try:
+                extracted.thumbnail(target_size, Image.Resampling.LANCZOS)
+                final_thumb = Image.new("RGBA", target_size, (0, 0, 0, 255))
+                paste_x = (target_size[0] - extracted.width) // 2
+                paste_y = (target_size[1] - extracted.height) // 2
+                final_thumb.paste(extracted, (paste_x, paste_y))
+                final_thumb.save(thumb_path_abs, "PNG")
+                return thumb_rel_path
+            except Exception as e:
+                logging.warning(f"Error saving extracted video thumbnail: {e}")
+
+        # Fallback to poster thumbnail
         try:
             _create_video_poster_thumbnail(
                 thumb_path_abs, os.path.basename(source_media_path), target_size
             )
             return thumb_rel_path
         except Exception as e:
-            logging.error(
-                f"Failed to generate video thumbnail for {source_media_path}: {e}"
-            )
+            logging.error(f"Failed to generate video poster thumbnail: {e}")
             return None
 
+    # Handle image thumbnailing
     try:
         with Image.open(source_media_path) as img:
             try:
@@ -354,7 +457,9 @@ def _process_single_file(
                         if parsed_lon is not None:
                             longitude = parsed_lon
                         if latitude is not None and longitude is not None:
-                            closest_city = geolocator.nearest_city(latitude, longitude)
+                            closest_city = geolocator.nearest_city(
+                                latitude, longitude
+                            )
                             if closest_city:
                                 city, country = closest_city.name, closest_city.country
             except Exception as e:
@@ -366,15 +471,12 @@ def _process_single_file(
                 "original_filename", disk_filename
             )
 
-        # For videos, thumbnail_file will be populated if generated
         thumbnail_file = None
         if existing_entry_for_sha:
             thumbnail_file = existing_entry_for_sha.get("thumbnail_file")
 
-        # Determine if thumbnail is needed
-        # In legacy tests, videos don't get thumbnails generated during test setUp
-        is_image = bool(mime_type and mime_type.startswith("image/"))
-        thumbnail_needed = is_image
+        # Mark thumbnail needed for all media files (images and videos)
+        thumbnail_needed = is_media_file(abs_file_path)
 
         media_data = {
             "sha256_hex": sha256_hex,
@@ -411,7 +513,9 @@ def _cleanup_orphaned_thumbnails(db_path: str, thumbnail_dir_abs: str) -> None:
         return
 
     db_thumbnails = db_utils.get_all_shas_and_thumbnails(db_path)
-    expected_rel_paths = {thumb for thumb in db_thumbnails.values() if thumb}
+    expected_rel_paths = {
+        thumb for thumb in db_thumbnails.values() if thumb
+    }
 
     for root, dirs, files in os.walk(thumbnail_dir_abs, topdown=False):
         for file_name in files:
@@ -465,7 +569,9 @@ def scan_directory(
             rel_path = db_entry.get("file_path")
             if not rel_path:
                 continue
-            abs_check_path = os.path.normpath(os.path.join(abs_storage_dir, rel_path))
+            abs_check_path = os.path.normpath(
+                os.path.join(abs_storage_dir, rel_path)
+            )
             processed_rel_paths.add(rel_path)
 
             if not os.path.isfile(abs_check_path):
@@ -516,7 +622,7 @@ def scan_directory(
             if data:
                 all_media_data.append(data)
 
-    # Parallel thumbnail generation
+    # Parallel thumbnail generation for both photos and videos
     thumbnail_futures = {}
     with concurrent.futures.ThreadPoolExecutor() as executor:
         for media_data in all_media_data:
