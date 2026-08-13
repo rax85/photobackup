@@ -474,6 +474,45 @@ def get_image(sha256_hex):
         abort(400, description="Invalid file path generated.")
 
     ext = os.path.splitext(file_path_relative)[1].lower()
+
+    # Web browsers cannot render HEIC natively in <img> tags.
+    # Serve a cached high-quality JPEG preview.
+    if ext in {".heic", ".heif"}:
+        preview_dir = os.path.join(app.config["THUMBNAIL_DIR"], "previews", sha256_hex[:2])
+        os.makedirs(preview_dir, exist_ok=True)
+        preview_file = os.path.join(preview_dir, f"{sha256_hex}.jpg")
+
+        if not os.path.isfile(preview_file) or os.path.getsize(preview_file) == 0:
+            try:
+                try:
+                    import pillow_heif
+                    pillow_heif.register_heif_opener()
+                except ImportError:
+                    pass
+                from PIL import Image, ImageOps
+                with Image.open(full_file_path) as img:
+                    img = ImageOps.exif_transpose(img)
+                    if img.mode not in ("RGB", "L"):
+                        img = img.convert("RGB")
+                    img.save(preview_file, "JPEG", quality=92, optimize=True)
+            except Exception as e:
+                logging.error(f"Failed to convert HEIC to JPEG preview: {e}")
+                if os.path.exists("/usr/bin/sips"):
+                    try:
+                        import subprocess
+                        subprocess.run(
+                            ["/usr/bin/sips", "-s", "format", "jpeg", full_file_path, "--out", preview_file],
+                            check=True,
+                            capture_output=True,
+                        )
+                    except Exception as sips_err:
+                        logging.error(f"SIPS fallback failed: {sips_err}")
+
+        if os.path.isfile(preview_file) and os.path.getsize(preview_file) > 0:
+            return send_from_directory(
+                preview_dir, f"{sha256_hex}.jpg", mimetype="image/jpeg", conditional=True
+            )
+
     mimetype = None
     if ext in {".mov", ".mp4", ".m4v"}:
         mimetype = "video/mp4"
@@ -483,8 +522,6 @@ def get_image(sha256_hex):
         mimetype = "image/jpeg"
     elif ext == ".png":
         mimetype = "image/png"
-    elif ext in {".heic", ".heif"}:
-        mimetype = "image/heic"
 
     try:
         return send_from_directory(
