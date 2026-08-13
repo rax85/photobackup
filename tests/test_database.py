@@ -140,6 +140,30 @@ class TestDataFiltering(unittest.TestCase):
         results = db_utils.get_media_files_by_location(self.db_path, "new york", "usa")
         self.assertEqual(len(results), 2)
 
+    def test_batch_add_and_total_count(self):
+        batch_data = [
+            {
+                "sha256_hex": f"batch_hash_{i}",
+                "filename": f"batch_file_{i}.jpg",
+                "original_filename": f"batch_file_{i}.jpg",
+                "file_path": f"batch/file_{i}.jpg",
+                "last_modified": time.time(),
+                "original_creation_date": 1672531200 + i * 100,
+                "city": "Tokyo",
+                "country": "Japan",
+                "mime_type": "image/jpeg",
+                "filesize": 1024,
+                "tags": '["tokyo", "japan"]',
+            }
+            for i in range(5)
+        ]
+        db_utils.batch_add_or_update_media_files(self.db_path, batch_data)
+        count = db_utils.get_total_media_count(self.db_path)
+        self.assertEqual(count, 9)  # 4 initial + 5 batch
+
+        search_res = db_utils.search_media_files(self.db_path, "Tokyo")
+        self.assertEqual(len(search_res), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

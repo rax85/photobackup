@@ -392,6 +392,17 @@ class TestServerFlaskWithDB(unittest.TestCase):
             self.assertEqual(db_entry_after_scan.get("tagging_model"), "Resnet")
             self.assertIn("mock_tag", db_entry_after_scan.get("tags"))
 
+    def test_get_api_media_paginated(self):
+        response = self.client.get("/api/media?limit=1&offset=0")
+        self.assertEqual(response.status_code, 200)
+        data = response.json
+        self.assertIn("items", data)
+        self.assertIn("total_count", data)
+        self.assertIn("has_more", data)
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["total_count"], 2)
+        self.assertTrue(data["has_more"])
+
 
 if __name__ == "__main__":
     unittest.main()

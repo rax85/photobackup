@@ -55,6 +55,7 @@ def get_db_connection(db_path: str) -> sqlite3.Connection:
         try:
             thread_local.connection.execute("PRAGMA journal_mode = WAL")
             thread_local.connection.execute("PRAGMA synchronous = NORMAL")
+            thread_local.connection.execute("PRAGMA cache_size = -64000")  # 64MB cache
         except sqlite3.Error:
             pass
 
@@ -75,7 +76,7 @@ def close_db_connection() -> None:
 
 def init_db(storage_dir: str) -> None:
     """
-    Initializes the database by creating tables and performance indexes.
+    Initializes the database by creating tables, indexes, and FTS5 full-text search.
 
     Args:
         storage_dir: The directory where the database file will be created.
@@ -128,6 +129,59 @@ def init_db(storage_dir: str) -> None:
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_mime_type ON media_files (mime_type)"
             )
+
+            # Initialize FTS5 Full-Text Search table and triggers if supported
+            try:
+                cursor.execute(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS media_files_fts USING fts5(
+                        sha256_hex UNINDEXED,
+                        filename,
+                        original_filename,
+                        city,
+                        country,
+                        tags,
+                        tokenize='unicode61'
+                    )
+                """
+                )
+                cursor.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS media_files_ai AFTER INSERT ON media_files BEGIN
+                        INSERT INTO media_files_fts (sha256_hex, filename, original_filename, city, country, tags)
+                        VALUES (new.sha256_hex, new.filename, new.original_filename, new.city, new.country, new.tags);
+                    END;
+                """
+                )
+                cursor.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS media_files_ad AFTER DELETE ON media_files BEGIN
+                        DELETE FROM media_files_fts WHERE sha256_hex = old.sha256_hex;
+                    END;
+                """
+                )
+                cursor.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS media_files_au AFTER UPDATE ON media_files BEGIN
+                        DELETE FROM media_files_fts WHERE sha256_hex = old.sha256_hex;
+                        INSERT INTO media_files_fts (sha256_hex, filename, original_filename, city, country, tags)
+                        VALUES (new.sha256_hex, new.filename, new.original_filename, new.city, new.country, new.tags);
+                    END;
+                """
+                )
+                # Populate FTS table if empty but media_files has rows
+                cursor.execute("SELECT COUNT(*) FROM media_files_fts")
+                fts_count = cursor.fetchone()[0]
+                if fts_count == 0:
+                    cursor.execute(
+                        """
+                        INSERT INTO media_files_fts (sha256_hex, filename, original_filename, city, country, tags)
+                        SELECT sha256_hex, filename, original_filename, city, country, tags FROM media_files
+                    """
+                    )
+            except sqlite3.OperationalError as e:
+                logging.info(f"FTS5 full text search not available or skipped: {e}")
+
             logging.info(f"Database schema and indexes ensured at {db_path}")
     except sqlite3.Error as e:
         logging.error(f"Error initializing database at {db_path}: {e}")
@@ -150,6 +204,27 @@ def add_or_update_media_file(db_path: str, media_data: Dict[str, Any]) -> None:
         if field not in media_data or media_data[field] is None:
             raise ValueError(f"Required field {field} missing or None in media_data")
 
+    columns = [
+        "sha256_hex",
+        "filename",
+        "original_filename",
+        "file_path",
+        "last_modified",
+        "original_creation_date",
+        "thumbnail_file",
+        "width",
+        "height",
+        "latitude",
+        "longitude",
+        "city",
+        "country",
+        "mime_type",
+        "filesize",
+        "tags",
+        "tagging_model",
+    ]
+    values = [media_data.get(col) for col in columns]
+
     try:
         with conn:
             cursor = conn.cursor()
@@ -159,34 +234,11 @@ def add_or_update_media_file(db_path: str, media_data: Dict[str, Any]) -> None:
             )
             existing_sha_for_path = cursor.fetchone()
             if existing_sha_for_path:
-                logging.warning(
-                    f"File path {media_data['file_path']} associated with new SHA. Deleting old {existing_sha_for_path[0]}"
-                )
                 conn.execute(
                     "DELETE FROM media_files WHERE sha256_hex = ?",
                     (existing_sha_for_path[0],),
                 )
 
-            columns = [
-                "sha256_hex",
-                "filename",
-                "original_filename",
-                "file_path",
-                "last_modified",
-                "original_creation_date",
-                "thumbnail_file",
-                "width",
-                "height",
-                "latitude",
-                "longitude",
-                "city",
-                "country",
-                "mime_type",
-                "filesize",
-                "tags",
-                "tagging_model",
-            ]
-            values = [media_data.get(col) for col in columns]
             sql = (
                 f"INSERT OR REPLACE INTO media_files ({', '.join(columns)}) "
                 f"VALUES ({', '.join(['?'] * len(columns))})"
@@ -196,6 +248,57 @@ def add_or_update_media_file(db_path: str, media_data: Dict[str, Any]) -> None:
         logging.error(
             f"Database error adding/updating media file {media_data.get('file_path')}: {e}"
         )
+        raise
+
+
+def batch_add_or_update_media_files(
+    db_path: str, media_data_list: List[Dict[str, Any]]
+) -> None:
+    """
+    Adds or updates a batch of media file records in a single transaction.
+
+    Args:
+        db_path: Path to database.
+        media_data_list: List of media dictionary records.
+    """
+    if not media_data_list:
+        return
+
+    conn = get_db_connection(db_path)
+    columns = [
+        "sha256_hex",
+        "filename",
+        "original_filename",
+        "file_path",
+        "last_modified",
+        "original_creation_date",
+        "thumbnail_file",
+        "width",
+        "height",
+        "latitude",
+        "longitude",
+        "city",
+        "country",
+        "mime_type",
+        "filesize",
+        "tags",
+        "tagging_model",
+    ]
+    sql = (
+        f"INSERT OR REPLACE INTO media_files ({', '.join(columns)}) "
+        f"VALUES ({', '.join(['?'] * len(columns))})"
+    )
+
+    rows = []
+    for media_data in media_data_list:
+        rows.append([media_data.get(col) for col in columns])
+
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.executemany(sql, rows)
+    except sqlite3.Error as e:
+        logging.error(f"Database error during batch add/update: {e}")
         raise
 
 
@@ -223,6 +326,18 @@ def get_media_file_by_path(db_path: str, file_path: str) -> Optional[Dict[str, A
     except sqlite3.Error as e:
         logging.error(f"Database error retrieving media file by path {file_path}: {e}")
         return None
+
+
+def get_total_media_count(db_path: str) -> int:
+    """Returns the total number of media records in the database."""
+    conn = get_db_connection(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM media_files")
+        row = cursor.fetchone()
+        return row[0] if row else 0
+    except sqlite3.Error:
+        return 0
 
 
 def get_all_media_files(
@@ -475,6 +590,58 @@ def get_media_files_by_location(
         return {}
 
 
+def _search_with_fts5(
+    conn: sqlite3.Connection,
+    query: str,
+    media_type: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
+) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Attempts fast FTS5 full-text search with token prefix matching."""
+    try:
+        # Sanitize and format FTS query tokens with prefix matching (e.g. 'paris*' 'sunset*')
+        clean_tokens = [
+            "".join(c for c in token if c.isalnum() or c in "_-")
+            for token in query.split()
+        ]
+        clean_tokens = [t for t in clean_tokens if t]
+        if not clean_tokens:
+            return None
+
+        fts_match_str = " ".join(f'"{t}"*' for t in clean_tokens)
+        sql = (
+            "SELECT m.* FROM media_files m "
+            "JOIN media_files_fts f ON m.sha256_hex = f.sha256_hex "
+            "WHERE media_files_fts MATCH ?"
+        )
+        params: List[Any] = [fts_match_str]
+
+        if media_type:
+            if media_type == "image":
+                sql += " AND m.mime_type LIKE 'image/%'"
+            elif media_type == "video":
+                sql += " AND m.mime_type LIKE 'video/%'"
+
+        sql += " ORDER BY m.original_creation_date DESC"
+
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+            if offset is not None:
+                sql += " OFFSET ?"
+                params.append(offset)
+
+        cursor = conn.cursor()
+        cursor.execute(sql, tuple(params))
+        media_dict = {}
+        for row in cursor.fetchall():
+            media_dict[row["sha256_hex"]] = dict(row)
+        return media_dict
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        # Fallback to standard LIKE if FTS table does not exist or MATCH syntax fails
+        return None
+
+
 def search_media_files(
     db_path: str,
     query: str,
@@ -482,13 +649,21 @@ def search_media_files(
     limit: Optional[int] = None,
     offset: Optional[int] = None,
 ) -> Dict[str, Dict[str, Any]]:
-    """Performs smart multi-field search across filename, city, country, and tags."""
+    """Performs smart multi-field search using FTS5 with automatic LIKE fallback."""
     conn = get_db_connection(db_path)
-    media_dict = {}
     query = query.strip()
     if not query and not media_type:
         return get_all_media_files(db_path, limit=limit, offset=offset)
 
+    if query:
+        fts_result = _search_with_fts5(
+            conn, query, media_type=media_type, limit=limit, offset=offset
+        )
+        if fts_result is not None:
+            return fts_result
+
+    # Standard LIKE fallback
+    media_dict = {}
     sql_conditions = []
     params: List[Any] = []
 

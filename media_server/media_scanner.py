@@ -604,50 +604,54 @@ def scan_directory(
                 media_to_process.append((abs_path, disk_filename, db_entry))
                 processed_rel_paths.add(rel_path)
 
-    all_media_data = []
-    for abs_path, filename, db_entry in media_to_process:
+    def _process_item_task(item):
+        abs_path, disk_filename, db_entry = item
         sha = get_file_sha256(abs_path)
-        if sha:
-            data = _process_single_file(
-                abs_storage_dir,
-                abs_path,
-                sha,
-                db_path,
-                thumbnail_dir_abs,
-                geolocator,
-                image_classifier,
-                filename,
-                db_entry,
-            )
-            if data:
-                all_media_data.append(data)
-
-    # Parallel thumbnail generation for both photos and videos
-    thumbnail_futures = {}
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        for media_data in all_media_data:
-            if media_data.get("_thumbnail_needed"):
-                future = executor.submit(
-                    generate_thumbnail,
-                    media_data["_abs_file_path"],
-                    thumbnail_dir_abs,
-                    media_data["sha256_hex"],
-                )
-                thumbnail_futures[future] = media_data
-
-        for future in concurrent.futures.as_completed(thumbnail_futures):
-            media_data = thumbnail_futures[future]
+        if not sha:
+            return None
+        data = _process_single_file(
+            abs_storage_dir,
+            abs_path,
+            sha,
+            db_path,
+            thumbnail_dir_abs,
+            geolocator,
+            image_classifier,
+            disk_filename,
+            db_entry,
+        )
+        if not data:
+            return None
+        if data.get("_thumbnail_needed"):
             try:
-                thumbnail_path = future.result()
-                if thumbnail_path:
-                    media_data["thumbnail_file"] = thumbnail_path
-            except Exception as exc:
-                logging.error(f"Thumbnail generation error: {exc}")
+                thumb_path = generate_thumbnail(
+                    abs_path, thumbnail_dir_abs, sha
+                )
+                if thumb_path:
+                    data["thumbnail_file"] = thumb_path
+            except Exception as e:
+                logging.error(f"Thumbnail error for {abs_path}: {e}")
+        data.pop("_thumbnail_needed", None)
+        data.pop("_abs_file_path", None)
+        return data
 
-    for media_data in all_media_data:
-        media_data.pop("_thumbnail_needed", None)
-        media_data.pop("_abs_file_path", None)
-        db_utils.add_or_update_media_file(db_path, media_data)
+    max_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
+    all_processed_media = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_process_item_task, item) for item in media_to_process]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                res = future.result()
+                if res:
+                    all_processed_media.append(res)
+            except Exception as exc:
+                logging.error(f"Task processing error: {exc}")
+
+    # Write in batches to minimize transaction lock overhead
+    BATCH_SIZE = 500
+    for i in range(0, len(all_processed_media), BATCH_SIZE):
+        batch = all_processed_media[i:i + BATCH_SIZE]
+        db_utils.batch_add_or_update_media_files(db_path, batch)
 
     if rescan:
         all_db_paths = db_utils.get_all_db_file_paths(db_path)

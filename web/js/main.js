@@ -12,6 +12,7 @@ const AppState = {
     searchQuery: '',
     lightbox: null,
     scrollObserver: null,
+    virtualizer: null,
 };
 
 // --------------------------------------------------------------------------
@@ -100,7 +101,7 @@ async function updateStatsBar() {
 }
 
 // --------------------------------------------------------------------------
-// Gallery Grouping & Rendering
+// Gallery Grouping & Viewport Virtualization
 // --------------------------------------------------------------------------
 function groupMediaByMonthYear(items) {
     const groups = new Map();
@@ -117,6 +118,153 @@ function groupMediaByMonthYear(items) {
     });
     return groups;
 }
+
+// Card DOM Factory
+function createCardElement(item) {
+    const isVideo = item.mime_type && item.mime_type.startsWith('video/');
+    const card = document.createElement('div');
+    card.className = 'gallery-item';
+
+    const link = document.createElement('a');
+    link.href = `/image/${item.sha256}`;
+    link.dataset.sha256 = item.sha256;
+    link.dataset.pswpWidth = item.width || 1920;
+    link.dataset.pswpHeight = item.height || 1080;
+    link.dataset.isVideo = isVideo ? 'true' : 'false';
+    link.dataset.mimeType = item.mime_type || '';
+    link.dataset.filename = item.filename || '';
+
+    if (isVideo) {
+        link.dataset.type = 'html';
+    }
+
+    // Thumbnail Image
+    const img = document.createElement('img');
+    img.src = `/thumbnail/${item.sha256}`;
+    img.alt = item.filename || 'Media thumbnail';
+    img.loading = 'lazy';
+    link.appendChild(img);
+
+    // Video indicator badge
+    if (isVideo) {
+        const videoBadge = document.createElement('div');
+        videoBadge.className = 'video-indicator';
+        videoBadge.innerHTML = `
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            <span>VIDEO</span>
+        `;
+        card.appendChild(videoBadge);
+    }
+
+    // Hover metadata card
+    const overlay = document.createElement('div');
+    overlay.className = 'card-overlay';
+
+    const title = document.createElement('span');
+    title.className = 'card-title';
+    title.textContent = item.filename;
+    overlay.appendChild(title);
+
+    const meta = document.createElement('div');
+    meta.className = 'card-meta';
+    if (item.city) {
+        meta.innerHTML += `<span>📍 ${item.city}</span>`;
+    }
+    if (item.original_creation_date) {
+        const d = new Date(item.original_creation_date * 1000);
+        meta.innerHTML += `<span>📅 ${d.toLocaleDateString()}</span>`;
+    }
+    overlay.appendChild(meta);
+
+    // Tags
+    if (item.tags) {
+        try {
+            const parsed = typeof item.tags === 'string' ? JSON.parse(item.tags) : item.tags;
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                const tagsDiv = document.createElement('div');
+                tagsDiv.className = 'card-tags';
+                parsed.slice(0, 3).forEach(t => {
+                    const tagPill = document.createElement('span');
+                    tagPill.className = 'card-tag-pill';
+                    tagPill.textContent = `#${Array.isArray(t) ? t[0] : t}`;
+                    tagsDiv.appendChild(tagPill);
+                });
+                overlay.appendChild(tagsDiv);
+            }
+        } catch { /* ignore */ }
+    }
+
+    card.appendChild(link);
+    card.appendChild(overlay);
+    return card;
+}
+
+// Section-level Viewport Virtualizer for 35,000+ items
+const SectionVirtualizer = {
+    observer: null,
+    renderedSections: new Set(),
+    sectionDataMap: new Map(),
+
+    init() {
+        if (this.observer) {
+            this.observer.disconnect();
+        }
+        this.renderedSections.clear();
+        this.sectionDataMap.clear();
+
+        this.observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                const section = entry.target;
+                const sectionId = section.id;
+                if (entry.isIntersecting) {
+                    this.mountSection(section, sectionId);
+                } else {
+                    const rect = entry.boundingClientRect;
+                    const isFar = (rect.top < -3000 || rect.bottom > window.innerHeight + 3000);
+                    if (isFar && this.renderedSections.size > 6) {
+                        this.unmountSection(section, sectionId);
+                    }
+                }
+            });
+        }, {
+            rootMargin: '800px 0px 800px 0px',
+            threshold: 0.01
+        });
+    },
+
+    register(sectionEl, sectionId, itemsInGroup) {
+        this.sectionDataMap.set(sectionId, itemsInGroup);
+        this.observer.observe(sectionEl);
+    },
+
+    mountSection(section, sectionId) {
+        if (this.renderedSections.has(sectionId)) return;
+        const items = this.sectionDataMap.get(sectionId);
+        if (!items) return;
+
+        const gridDiv = section.querySelector('.photo-items-grid');
+        if (!gridDiv) return;
+
+        gridDiv.innerHTML = '';
+        const fragment = document.createDocumentFragment();
+        items.forEach(item => {
+            fragment.appendChild(createCardElement(item));
+        });
+        gridDiv.appendChild(fragment);
+        this.renderedSections.add(sectionId);
+        section.style.minHeight = `${section.offsetHeight}px`;
+    },
+
+    unmountSection(section, sectionId) {
+        if (!this.renderedSections.has(sectionId)) return;
+        const gridDiv = section.querySelector('.photo-items-grid');
+        if (gridDiv) {
+            section.style.minHeight = `${section.offsetHeight}px`;
+            gridDiv.innerHTML = '';
+        }
+        this.renderedSections.delete(sectionId);
+    }
+};
 
 function renderGallery(items) {
     const galleryGrid = document.getElementById('gallery-grid');
@@ -138,9 +286,11 @@ function renderGallery(items) {
         return;
     }
 
+    SectionVirtualizer.init();
     const groupedMedia = groupMediaByMonthYear(items);
     galleryGrid.innerHTML = '';
 
+    let sectionIndex = 0;
     for (const [monthYear, itemsInGroup] of groupedMedia) {
         const sectionId = `section-${monthYear.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase()}`;
         const monthSection = document.createElement('section');
@@ -155,87 +305,21 @@ function renderGallery(items) {
         const gridDiv = document.createElement('div');
         gridDiv.className = 'photo-items-grid';
 
-        itemsInGroup.forEach(item => {
-            const isVideo = item.mime_type && item.mime_type.startsWith('video/');
-            const card = document.createElement('div');
-            card.className = 'gallery-item';
-
-            const link = document.createElement('a');
-            link.href = `/image/${item.sha256}`;
-            link.dataset.sha256 = item.sha256;
-            link.dataset.pswpWidth = item.width || 1920;
-            link.dataset.pswpHeight = item.height || 1080;
-            link.dataset.isVideo = isVideo ? 'true' : 'false';
-            link.dataset.mimeType = item.mime_type || '';
-            link.dataset.filename = item.filename || '';
-
-            if (isVideo) {
-                link.dataset.type = 'html';
-            }
-
-            // Thumbnail Image
-            const img = document.createElement('img');
-            img.src = `/thumbnail/${item.sha256}`;
-            img.alt = item.filename || 'Media thumbnail';
-            img.loading = 'lazy';
-            link.appendChild(img);
-
-            // Video indicator badge
-            if (isVideo) {
-                const videoBadge = document.createElement('div');
-                videoBadge.className = 'video-indicator';
-                videoBadge.innerHTML = `
-                    <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                    <span>VIDEO</span>
-                `;
-                card.appendChild(videoBadge);
-            }
-
-            // Hover metadata card
-            const overlay = document.createElement('div');
-            overlay.className = 'card-overlay';
-
-            const title = document.createElement('span');
-            title.className = 'card-title';
-            title.textContent = item.filename;
-            overlay.appendChild(title);
-
-            const meta = document.createElement('div');
-            meta.className = 'card-meta';
-            if (item.city) {
-                meta.innerHTML += `<span>📍 ${item.city}</span>`;
-            }
-            if (item.original_creation_date) {
-                const d = new Date(item.original_creation_date * 1000);
-                meta.innerHTML += `<span>📅 ${d.toLocaleDateString()}</span>`;
-            }
-            overlay.appendChild(meta);
-
-            // Tags
-            if (item.tags) {
-                try {
-                    const parsed = JSON.parse(item.tags);
-                    if (Array.isArray(parsed) && parsed.length > 0) {
-                        const tagsDiv = document.createElement('div');
-                        tagsDiv.className = 'card-tags';
-                        parsed.slice(0, 3).forEach(t => {
-                            const tagPill = document.createElement('span');
-                            tagPill.className = 'card-tag-pill';
-                            tagPill.textContent = `#${Array.isArray(t) ? t[0] : t}`;
-                            tagsDiv.appendChild(tagPill);
-                        });
-                        overlay.appendChild(tagsDiv);
-                    }
-                } catch { /* ignore */ }
-            }
-
-            card.appendChild(link);
-            card.appendChild(overlay);
-            gridDiv.appendChild(card);
-        });
+        // Pre-render the first 2 visible sections immediately for instant paint
+        if (sectionIndex < 2) {
+            const fragment = document.createDocumentFragment();
+            itemsInGroup.forEach(item => {
+                fragment.appendChild(createCardElement(item));
+            });
+            gridDiv.appendChild(fragment);
+            SectionVirtualizer.renderedSections.add(sectionId);
+        }
 
         monthSection.appendChild(gridDiv);
         galleryGrid.appendChild(monthSection);
+
+        SectionVirtualizer.register(monthSection, sectionId, itemsInGroup);
+        sectionIndex++;
     }
 
     renderTimelineSidebar(groupedMedia);
@@ -275,6 +359,8 @@ function renderTimelineSidebar(groupedMedia) {
             e.preventDefault();
             const target = document.getElementById(sectionId);
             if (target) {
+                // Ensure section is mounted before scrolling
+                SectionVirtualizer.mountSection(target, sectionId);
                 target.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 if (window.innerWidth < 768) {
                     document.getElementById('navigation-sidebar')?.classList.remove('expanded');
@@ -410,7 +496,7 @@ function initPhotoSwipe() {
                         }
                         if (item.tags) {
                             try {
-                                const parsed = JSON.parse(item.tags);
+                                const parsed = typeof item.tags === 'string' ? JSON.parse(item.tags) : item.tags;
                                 if (Array.isArray(parsed) && parsed.length > 0) {
                                     const tagStr = parsed.map(t => `#${Array.isArray(t) ? t[0] : t}`).join(' ');
                                     parts.push(`<span class="pswp-caption-tags">${tagStr}</span>`);
@@ -430,11 +516,11 @@ function initPhotoSwipe() {
 }
 
 // --------------------------------------------------------------------------
-// API Fetching & Search Engine
+// API Fetching & Progressive Loading
 // --------------------------------------------------------------------------
 async function fetchMediaList() {
     const galleryGrid = document.getElementById('gallery-grid');
-    if (galleryGrid) {
+    if (galleryGrid && (!AppState.allMedia || AppState.allMedia.length === 0)) {
         galleryGrid.innerHTML = `
             <div class="photo-items-grid">
                 ${Array(8).fill('<div class="skeleton-card"></div>').join('')}
@@ -443,6 +529,26 @@ async function fetchMediaList() {
     }
 
     try {
+        // Fast path: fetch initial page of 200 items for sub-50ms initial paint
+        const initialRes = await fetch('/api/media?limit=200&offset=0');
+        if (initialRes.ok) {
+            const initialData = await initialRes.json();
+            if (initialData.items && initialData.items.length > 0) {
+                AppState.allMedia = initialData.items.map(item => ({
+                    sha256: item.sha256_hex,
+                    ...item
+                }));
+                applyFilters();
+                updateStatsBar();
+
+                if (initialData.has_more) {
+                    fetchRemainingMedia();
+                    return;
+                }
+            }
+        }
+
+        // Full fetch fallback
         const res = await fetch('/list');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -456,9 +562,27 @@ async function fetchMediaList() {
     } catch (err) {
         console.error('Error loading media:', err);
         Toast.show('Error loading media library. Check server connection.', 'error');
-        if (galleryGrid) {
+        if (galleryGrid && (!AppState.allMedia || AppState.allMedia.length === 0)) {
             galleryGrid.innerHTML = '<p class="empty-state">Could not connect to media server.</p>';
         }
+    }
+}
+
+async function fetchRemainingMedia() {
+    try {
+        const res = await fetch('/list');
+        if (res.ok) {
+            const data = await res.json();
+            AppState.allMedia = Object.entries(data).map(([sha256, info]) => ({
+                sha256,
+                ...info
+            }));
+            AppState.allMedia.sort((a, b) => (b.original_creation_date || 0) - (a.original_creation_date || 0));
+            applyFilters();
+            updateStatsBar();
+        }
+    } catch {
+        /* background fetch failed silently */
     }
 }
 
@@ -479,7 +603,7 @@ function applyFilters() {
             const filename = (item.filename || '').toLowerCase();
             const city = (item.city || '').toLowerCase();
             const country = (item.country || '').toLowerCase();
-            const tags = (item.tags || '').toLowerCase();
+            const tags = (typeof item.tags === 'string' ? item.tags : JSON.stringify(item.tags || '')).toLowerCase();
             return filename.includes(q) || city.includes(q) || country.includes(q) || tags.includes(q);
         });
     }
@@ -740,7 +864,7 @@ document.addEventListener('DOMContentLoaded', () => {
             searchDebounce = setTimeout(() => {
                 AppState.searchQuery = val;
                 applyFilters();
-            }, 250);
+            }, 200);
         });
 
         resetBtn.addEventListener('click', () => {

@@ -156,12 +156,32 @@ def root():
 
 @app.route("/list", methods=["GET"])
 def list_media():
-    """Returns all media files in database."""
+    """Returns media files in database, supporting limit and offset."""
     limit = request.args.get("limit", type=int)
     offset = request.args.get("offset", type=int)
     db_path = app.config["DATABASE_PATH"]
     all_media = db_utils.get_all_media_files(db_path, limit=limit, offset=offset)
     return jsonify(all_media)
+
+
+@app.route("/api/media", methods=["GET"])
+def api_media_paginated():
+    """Returns paginated media records with total count and metadata."""
+    limit = request.args.get("limit", default=100, type=int)
+    offset = request.args.get("offset", default=0, type=int)
+    db_path = app.config["DATABASE_PATH"]
+    total = db_utils.get_total_media_count(db_path)
+    media_dict = db_utils.get_all_media_files(db_path, limit=limit, offset=offset)
+    items = list(media_dict.values())
+    return jsonify(
+        {
+            "items": items,
+            "total_count": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": (offset + len(items)) < total,
+        }
+    )
 
 
 @app.route("/list/date/<string:date_str>", methods=["GET"])
