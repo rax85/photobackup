@@ -314,8 +314,10 @@ class TestMediaScannerWithDB(unittest.TestCase):
         # Check img1.jpg
         data_img1 = result_from_db.get(self.hash_img1)
         self.assertIsNotNone(data_img1)
+        st_img1 = os.stat(self.file_img1)
+        expected_date = getattr(st_img1, "st_birthtime", st_img1.st_mtime)
         self.assertAlmostEqual(
-            data_img1["original_creation_date"], os.path.getctime(self.file_img1)
+            data_img1["original_creation_date"], expected_date
         )
         self.assertIsNone(data_img1.get("latitude"))
         relative_thumb_path_img1 = os.path.join(

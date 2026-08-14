@@ -237,6 +237,24 @@ def _extract_video_frame(video_path: str) -> Optional[Image.Image]:
     return None
 
 
+def _save_image_atomic(img: Image.Image, output_path: str, format: str = "PNG") -> None:
+    """Atomically writes a PIL Image to disk using a temporary file and os.replace."""
+    dir_name = os.path.dirname(output_path)
+    os.makedirs(dir_name, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=dir_name, delete=False, suffix=".tmp") as tmp:
+        tmp_path = tmp.name
+    try:
+        img.save(tmp_path, format)
+        os.replace(tmp_path, output_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
 def _create_video_poster_thumbnail(
     output_path: str, filename: str, target_size: Tuple[int, int]
 ) -> None:
@@ -276,7 +294,7 @@ def _create_video_poster_thumbnail(
         fill=(30, 41, 59, 230),
     )
     draw.text((badge_x + 10, badge_y + 4), ext, fill=(255, 255, 255, 255))
-    img.save(output_path, "PNG")
+    _save_image_atomic(img, output_path, "PNG")
 
 
 def generate_thumbnail(
@@ -327,7 +345,7 @@ def generate_thumbnail(
                 paste_x = (target_size[0] - extracted.width) // 2
                 paste_y = (target_size[1] - extracted.height) // 2
                 final_thumb.paste(extracted, (paste_x, paste_y))
-                final_thumb.save(thumb_path_abs, "PNG")
+                _save_image_atomic(final_thumb, thumb_path_abs, "PNG")
                 return thumb_rel_path
             except Exception as e:
                 logging.warning(f"Error saving extracted video thumbnail: {e}")
@@ -355,7 +373,7 @@ def generate_thumbnail(
             paste_x = (target_size[0] - img.width) // 2
             paste_y = (target_size[1] - img.height) // 2
             final_thumb.paste(img, (paste_x, paste_y))
-            final_thumb.save(thumb_path_abs, "PNG")
+            _save_image_atomic(final_thumb, thumb_path_abs, "PNG")
             return thumb_rel_path
     except FileNotFoundError:
         logging.error(f"Source file not found for thumbnail: {source_media_path}")
@@ -425,8 +443,12 @@ def _process_single_file(
                 tags = None
 
     try:
-        last_modified = os.path.getmtime(abs_file_path)
-        filesystem_creation_time = os.path.getctime(abs_file_path)
+        st = os.stat(abs_file_path)
+        last_modified = st.st_mtime
+        if hasattr(st, "st_birthtime"):
+            filesystem_creation_time = st.st_birthtime
+        else:
+            filesystem_creation_time = st.st_mtime
         original_creation_date = filesystem_creation_time
         image_width, image_height = None, None
         latitude, longitude, city, country = None, None, None, None
@@ -563,9 +585,15 @@ def scan_directory(
     processed_rel_paths: Set[str] = set()
     media_to_process = []
 
+    existing_db_entries = db_utils.get_all_media_files(db_path)
+    existing_by_path: Dict[str, Dict[str, Any]] = {
+        entry["file_path"]: entry
+        for entry in existing_db_entries.values()
+        if entry.get("file_path")
+    }
+
     if rescan:
-        db_entries = db_utils.get_all_media_files(db_path)
-        for sha256_hex, db_entry in db_entries.items():
+        for sha256_hex, db_entry in existing_db_entries.items():
             rel_path = db_entry.get("file_path")
             if not rel_path:
                 continue
@@ -600,58 +628,63 @@ def scan_directory(
             if rel_path in processed_rel_paths and rescan:
                 continue
             if is_media_file(abs_path):
-                db_entry = db_utils.get_media_file_by_path(db_path, rel_path)
+                db_entry = existing_by_path.get(rel_path)
                 media_to_process.append((abs_path, disk_filename, db_entry))
                 processed_rel_paths.add(rel_path)
 
     def _process_item_task(item):
-        abs_path, disk_filename, db_entry = item
-        sha = get_file_sha256(abs_path)
-        if not sha:
-            return None
-        data = _process_single_file(
-            abs_storage_dir,
-            abs_path,
-            sha,
-            db_path,
-            thumbnail_dir_abs,
-            geolocator,
-            image_classifier,
-            disk_filename,
-            db_entry,
-        )
-        if not data:
-            return None
-        if data.get("_thumbnail_needed"):
-            try:
-                thumb_path = generate_thumbnail(
-                    abs_path, thumbnail_dir_abs, sha
-                )
-                if thumb_path:
-                    data["thumbnail_file"] = thumb_path
-            except Exception as e:
-                logging.error(f"Thumbnail error for {abs_path}: {e}")
-        data.pop("_thumbnail_needed", None)
-        data.pop("_abs_file_path", None)
-        return data
+        try:
+            abs_path, disk_filename, db_entry = item
+            sha = get_file_sha256(abs_path)
+            if not sha:
+                return None
+            data = _process_single_file(
+                abs_storage_dir,
+                abs_path,
+                sha,
+                db_path,
+                thumbnail_dir_abs,
+                geolocator,
+                image_classifier,
+                disk_filename,
+                db_entry,
+            )
+            if not data:
+                return None
+            if data.get("_thumbnail_needed"):
+                try:
+                    thumb_path = generate_thumbnail(
+                        abs_path, thumbnail_dir_abs, sha
+                    )
+                    if thumb_path:
+                        data["thumbnail_file"] = thumb_path
+                except Exception as e:
+                    logging.error(f"Thumbnail error for {abs_path}: {e}")
+            data.pop("_thumbnail_needed", None)
+            data.pop("_abs_file_path", None)
+            return data
+        finally:
+            db_utils.close_db_connection()
 
     max_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
-    all_processed_media = []
+    BATCH_SIZE = 500
+    batch_buffer = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(_process_item_task, item) for item in media_to_process]
         for future in concurrent.futures.as_completed(futures):
             try:
                 res = future.result()
                 if res:
-                    all_processed_media.append(res)
+                    batch_buffer.append(res)
+                    if len(batch_buffer) >= BATCH_SIZE:
+                        db_utils.batch_add_or_update_media_files(db_path, batch_buffer)
+                        batch_buffer.clear()
             except Exception as exc:
                 logging.error(f"Task processing error: {exc}")
 
-    # Write in batches to minimize transaction lock overhead
-    BATCH_SIZE = 500
-    for i in range(0, len(all_processed_media), BATCH_SIZE):
-        batch = all_processed_media[i:i + BATCH_SIZE]
-        db_utils.batch_add_or_update_media_files(db_path, batch)
+    if batch_buffer:
+        db_utils.batch_add_or_update_media_files(db_path, batch_buffer)
+        batch_buffer.clear()
 
     if rescan:
         all_db_paths = db_utils.get_all_db_file_paths(db_path)

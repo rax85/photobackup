@@ -16,6 +16,16 @@ const AppState = {
 };
 
 // --------------------------------------------------------------------------
+// HTML Sanitization Helper
+// --------------------------------------------------------------------------
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    const el = document.createElement('span');
+    el.textContent = String(str);
+    return el.innerHTML;
+}
+
+// --------------------------------------------------------------------------
 // Toast Notification Manager
 // --------------------------------------------------------------------------
 const Toast = {
@@ -25,7 +35,9 @@ const Toast = {
 
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
-        toast.innerHTML = `<span>${message}</span>`;
+        const msgSpan = document.createElement('span');
+        msgSpan.textContent = message;
+        toast.appendChild(msgSpan);
         container.appendChild(toast);
 
         setTimeout(() => {
@@ -168,11 +180,15 @@ function createCardElement(item) {
     const meta = document.createElement('div');
     meta.className = 'card-meta';
     if (item.city) {
-        meta.innerHTML += `<span>📍 ${item.city}</span>`;
+        const citySpan = document.createElement('span');
+        citySpan.textContent = `📍 ${item.city}`;
+        meta.appendChild(citySpan);
     }
     if (item.original_creation_date) {
         const d = new Date(item.original_creation_date * 1000);
-        meta.innerHTML += `<span>📅 ${d.toLocaleDateString()}</span>`;
+        const dateSpan = document.createElement('span');
+        dateSpan.textContent = `📅 ${d.toLocaleDateString()}`;
+        meta.appendChild(dateSpan);
     }
     overlay.appendChild(meta);
 
@@ -463,7 +479,8 @@ function initPhotoSwipe() {
     AppState.lightbox.on('close', () => {
         document.querySelectorAll('.pswp-video-player').forEach(video => {
             video.pause();
-            video.src = '';
+            video.removeAttribute('src');
+            video.load();
         });
     });
 
@@ -486,19 +503,20 @@ function initPhotoSwipe() {
                     const item = AppState.allMedia.find(m => m.sha256 === sha256);
                     if (item) {
                         let parts = [];
-                        if (item.filename) parts.push(`<strong>${item.filename}</strong>`);
+                        if (item.filename) parts.push(`<strong>${escapeHtml(item.filename)}</strong>`);
                         if (item.original_creation_date) {
                             const d = new Date(item.original_creation_date * 1000);
-                            parts.push(`<span class="pswp-caption-date">📅 ${d.toLocaleDateString()}</span>`);
+                            parts.push(`<span class="pswp-caption-date">📅 ${escapeHtml(d.toLocaleDateString())}</span>`);
                         }
                         if (item.city) {
-                            parts.push(`<span class="pswp-caption-location">📍 ${item.city}${item.country ? ', ' + item.country : ''}</span>`);
+                            const loc = item.city + (item.country ? ', ' + item.country : '');
+                            parts.push(`<span class="pswp-caption-location">📍 ${escapeHtml(loc)}</span>`);
                         }
                         if (item.tags) {
                             try {
                                 const parsed = typeof item.tags === 'string' ? JSON.parse(item.tags) : item.tags;
                                 if (Array.isArray(parsed) && parsed.length > 0) {
-                                    const tagStr = parsed.map(t => `#${Array.isArray(t) ? t[0] : t}`).join(' ');
+                                    const tagStr = parsed.map(t => `#${escapeHtml(Array.isArray(t) ? t[0] : t)}`).join(' ');
                                     parts.push(`<span class="pswp-caption-tags">${tagStr}</span>`);
                                 }
                             } catch { /* ignore */ }
@@ -570,17 +588,28 @@ async function fetchMediaList() {
 
 async function fetchRemainingMedia() {
     try {
-        const res = await fetch('/list');
-        if (res.ok) {
+        let offset = AppState.allMedia.length;
+        const limit = 500;
+        let hasMore = true;
+
+        while (hasMore) {
+            const res = await fetch(`/api/media?limit=${limit}&offset=${offset}`);
+            if (!res.ok) break;
             const data = await res.json();
-            AppState.allMedia = Object.entries(data).map(([sha256, info]) => ({
-                sha256,
-                ...info
+            if (!data.items || data.items.length === 0) break;
+
+            const newItems = data.items.map(item => ({
+                sha256: item.sha256_hex,
+                ...item
             }));
-            AppState.allMedia.sort((a, b) => (b.original_creation_date || 0) - (a.original_creation_date || 0));
-            applyFilters();
-            updateStatsBar();
+            AppState.allMedia.push(...newItems);
+            offset += newItems.length;
+            hasMore = Boolean(data.has_more);
         }
+
+        AppState.allMedia.sort((a, b) => (b.original_creation_date || 0) - (a.original_creation_date || 0));
+        applyFilters();
+        updateStatsBar();
     } catch {
         /* background fetch failed silently */
     }
@@ -687,47 +716,68 @@ const UploadManager = {
             const file = files[i];
             const itemRow = document.createElement('div');
             itemRow.className = 'dock-item';
-            itemRow.innerHTML = `
-                <span class="dock-item-name">${file.name}</span>
-                <span class="dock-item-status" id="status-${i}">Uploading...</span>
-            `;
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'dock-item-name';
+            nameSpan.textContent = file.name;
+
+            const statusSpan = document.createElement('span');
+            statusSpan.className = 'dock-item-status';
+            statusSpan.id = `status-${i}`;
+            statusSpan.textContent = 'Queued...';
+
+            itemRow.appendChild(nameSpan);
+            itemRow.appendChild(statusSpan);
             dockList.appendChild(itemRow);
+        }
 
-            const formData = new FormData();
-            formData.append('file', file, file.name);
+        const CONCURRENCY = 3;
+        let currentIndex = 0;
 
-            try {
-                const res = await fetch(`/image/${encodeURIComponent(file.name)}`, {
-                    method: 'PUT',
-                    body: formData,
-                });
-
+        const uploadWorker = async () => {
+            while (currentIndex < total) {
+                const i = currentIndex++;
+                const file = files[i];
                 const statusEl = document.getElementById(`status-${i}`);
-                if (res.ok) {
-                    successCount++;
-                    if (statusEl) {
-                        statusEl.textContent = '✓ Done';
-                        statusEl.className = 'dock-item-status success';
+                if (statusEl) statusEl.textContent = 'Uploading...';
+
+                const formData = new FormData();
+                formData.append('file', file, file.name);
+
+                try {
+                    const res = await fetch(`/image/${encodeURIComponent(file.name)}`, {
+                        method: 'PUT',
+                        body: formData,
+                    });
+
+                    if (res.ok) {
+                        successCount++;
+                        if (statusEl) {
+                            statusEl.textContent = '✓ Done';
+                            statusEl.className = 'dock-item-status success';
+                        }
+                    } else {
+                        if (statusEl) {
+                            statusEl.textContent = '✕ Failed';
+                            statusEl.className = 'dock-item-status error';
+                        }
                     }
-                } else {
+                } catch {
                     if (statusEl) {
-                        statusEl.textContent = '✕ Failed';
+                        statusEl.textContent = '✕ Error';
                         statusEl.className = 'dock-item-status error';
                     }
                 }
-            } catch {
-                const statusEl = document.getElementById(`status-${i}`);
-                if (statusEl) {
-                    statusEl.textContent = '✕ Error';
-                    statusEl.className = 'dock-item-status error';
-                }
-            }
 
-            completed++;
-            const pct = Math.round((completed / total) * 100);
-            dockProgress.style.width = `${pct}%`;
-            dockTitle.textContent = `Uploaded ${completed}/${total} files (${pct}%)`;
-        }
+                completed++;
+                const pct = Math.round((completed / total) * 100);
+                dockProgress.style.width = `${pct}%`;
+                dockTitle.textContent = `Uploaded ${completed}/${total} files (${pct}%)`;
+            }
+        };
+
+        const workers = Array(Math.min(CONCURRENCY, total)).fill(0).map(() => uploadWorker());
+        await Promise.all(workers);
 
         Toast.show(`Uploaded ${successCount} of ${total} file(s) successfully!`, 'success');
         fetchMediaList();

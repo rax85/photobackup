@@ -1,8 +1,25 @@
+from __future__ import annotations
 import abc
+from dataclasses import dataclass
 import os
+import time
 from typing import Any, Dict
 from absl import logging
 from media_server.settings import Settings
+
+
+@dataclass
+class ArchivalResult:
+    """Represents the result of an archival operation or connection test."""
+    success: bool
+    message: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"success": self.success, "message": self.message}
+
+
+# Backwards compatibility alias
+Tuple_Result = ArchivalResult
 
 
 class BaseArchivalProvider(abc.ABC):
@@ -14,18 +31,9 @@ class BaseArchivalProvider(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def test_connection(self) -> "Tuple_Result":
+    def test_connection(self) -> ArchivalResult:
         """Tests connectivity to the remote bucket."""
         pass
-
-
-class Tuple_Result:
-    def __init__(self, success: bool, message: str):
-        self.success = success
-        self.message = message
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"success": self.success, "message": self.message}
 
 
 class NullArchivalProvider(BaseArchivalProvider):
@@ -34,15 +42,16 @@ class NullArchivalProvider(BaseArchivalProvider):
     def upload_file(self, local_path: str, remote_key: str) -> bool:
         return False
 
-    def test_connection(self) -> Tuple_Result:
-        return Tuple_Result(True, "Archival backend is disabled.")
+    def test_connection(self) -> ArchivalResult:
+        return ArchivalResult(True, "Archival backend is disabled.")
 
 
 class S3ArchivalProvider(BaseArchivalProvider):
     """AWS S3 Archival Provider using boto3."""
 
-    def __init__(self, bucket_name: str):
+    def __init__(self, bucket_name: str, max_retries: int = 3):
         self.bucket_name = bucket_name
+        self.max_retries = max_retries
         self.client = None
         self._init_client()
 
@@ -58,32 +67,40 @@ class S3ArchivalProvider(BaseArchivalProvider):
     def upload_file(self, local_path: str, remote_key: str) -> bool:
         if not self.client or not self.bucket_name:
             return False
-        try:
-            self.client.upload_file(local_path, self.bucket_name, remote_key)
-            return True
-        except Exception as e:
-            logging.error(f"S3 upload failed for {local_path} -> {remote_key}: {e}")
-            return False
+        for attempt in range(self.max_retries):
+            try:
+                self.client.upload_file(local_path, self.bucket_name, remote_key)
+                return True
+            except Exception as e:
+                logging.warning(
+                    f"S3 upload attempt {attempt + 1}/{self.max_retries} failed for {local_path} -> {remote_key}: {e}"
+                )
+                if attempt < self.max_retries - 1:
+                    time.sleep(0.5 * (2 ** attempt))
+                else:
+                    logging.error(f"S3 upload permanently failed for {local_path} -> {remote_key}: {e}")
+        return False
 
-    def test_connection(self) -> Tuple_Result:
+    def test_connection(self) -> ArchivalResult:
         if not self.bucket_name:
-            return Tuple_Result(False, "S3 bucket name is not configured.")
+            return ArchivalResult(False, "S3 bucket name is not configured.")
         if not self.client:
-            return Tuple_Result(False, "boto3 library is not installed.")
+            return ArchivalResult(False, "boto3 library is not installed.")
         try:
             self.client.head_bucket(Bucket=self.bucket_name)
-            return Tuple_Result(
+            return ArchivalResult(
                 True, f"Successfully connected to S3 bucket '{self.bucket_name}'."
             )
         except Exception as e:
-            return Tuple_Result(False, f"S3 connection failed: {e}")
+            return ArchivalResult(False, f"S3 connection failed: {e}")
 
 
 class GCSArchivalProvider(BaseArchivalProvider):
     """Google Cloud Storage Archival Provider."""
 
-    def __init__(self, bucket_name: str):
+    def __init__(self, bucket_name: str, max_retries: int = 3):
         self.bucket_name = bucket_name
+        self.max_retries = max_retries
         self.client = None
         self._init_client()
 
@@ -101,27 +118,34 @@ class GCSArchivalProvider(BaseArchivalProvider):
     def upload_file(self, local_path: str, remote_key: str) -> bool:
         if not self.client or not self.bucket_name:
             return False
-        try:
-            bucket = self.client.bucket(self.bucket_name)
-            blob = bucket.blob(remote_key)
-            blob.upload_from_filename(local_path)
-            return True
-        except Exception as e:
-            logging.error(f"GCS upload failed for {local_path} -> {remote_key}: {e}")
-            return False
+        for attempt in range(self.max_retries):
+            try:
+                bucket = self.client.bucket(self.bucket_name)
+                blob = bucket.blob(remote_key)
+                blob.upload_from_filename(local_path)
+                return True
+            except Exception as e:
+                logging.warning(
+                    f"GCS upload attempt {attempt + 1}/{self.max_retries} failed for {local_path} -> {remote_key}: {e}"
+                )
+                if attempt < self.max_retries - 1:
+                    time.sleep(0.5 * (2 ** attempt))
+                else:
+                    logging.error(f"GCS upload permanently failed for {local_path} -> {remote_key}: {e}")
+        return False
 
-    def test_connection(self) -> Tuple_Result:
+    def test_connection(self) -> ArchivalResult:
         if not self.bucket_name:
-            return Tuple_Result(False, "GCS bucket name is not configured.")
+            return ArchivalResult(False, "GCS bucket name is not configured.")
         if not self.client:
-            return Tuple_Result(False, "google-cloud-storage library is not installed.")
+            return ArchivalResult(False, "google-cloud-storage library is not installed.")
         try:
             bucket = self.client.get_bucket(self.bucket_name)
-            return Tuple_Result(
+            return ArchivalResult(
                 True, f"Successfully connected to GCS bucket '{bucket.name}'."
             )
         except Exception as e:
-            return Tuple_Result(False, f"GCS connection failed: {e}")
+            return ArchivalResult(False, f"GCS connection failed: {e}")
 
 
 class MockArchivalProvider(BaseArchivalProvider):
@@ -137,8 +161,8 @@ class MockArchivalProvider(BaseArchivalProvider):
             return True
         return False
 
-    def test_connection(self) -> Tuple_Result:
-        return Tuple_Result(True, f"Mock archival connected to '{self.bucket_name}'.")
+    def test_connection(self) -> ArchivalResult:
+        return ArchivalResult(True, f"Mock archival connected to '{self.bucket_name}'.")
 
 
 class ArchivalManager:

@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import sys
+import tempfile
 import threading
 from typing import Optional
 
@@ -57,8 +58,26 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 WEB_DIR_ABSOLUTE = os.path.join(PROJECT_ROOT, "web")
 
 app = Flask(__name__, static_folder=WEB_DIR_ABSOLUTE, static_url_path="")
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024 * 1024  # 4 GB limit
 settings_manager: Optional[settings_utils.SettingsManager] = None
 scanner_wakeup_event = threading.Event()
+
+_cached_classifier = None
+_cached_classifier_lock = threading.Lock()
+
+
+def get_image_classifier(settings: settings_utils.Settings) -> ImageClassifier:
+    """Returns a cached ImageClassifier instance, reloading only when model changes."""
+    global _cached_classifier
+    with _cached_classifier_lock:
+        if (
+            _cached_classifier is None
+            or _cached_classifier.settings.tagging_model != settings.tagging_model
+        ):
+            if _cached_classifier is not None:
+                _cached_classifier.unload()
+            _cached_classifier = ImageClassifier(settings)
+        return _cached_classifier
 
 
 def get_settings_mgr() -> settings_utils.SettingsManager:
@@ -102,8 +121,12 @@ def get_db():
 @app.teardown_appcontext
 def close_db(error):
     """Closes DB connection at the end of the request."""
+    db_utils.close_db_connection()
     if hasattr(flask_g, "sqlite_db"):
-        db_utils.close_db_connection()
+        try:
+            flask_g.sqlite_db.close()
+        except Exception:
+            pass
         delattr(flask_g, "sqlite_db")
 
 
@@ -121,7 +144,7 @@ def background_scanner_task(app_context):
         while True:
             mgr = get_settings_mgr()
             settings = mgr.get()
-            image_classifier = ImageClassifier(settings)
+            image_classifier = get_image_classifier(settings)
             rescan_interval = settings.rescan_interval
 
             if rescan_interval <= 0:
@@ -314,12 +337,30 @@ def put_image(filename):
     if not s_filename:
         s_filename = secure_filename(original_client_filename) or "unnamed_upload"
 
-    file_contents = file_from_request.read()
-    sha256_hash = hashlib.sha256(file_contents).hexdigest()
+    today_str = datetime.datetime.now().strftime("%Y%m%d")
+    upload_subdir_rel = os.path.join("uploads", today_str)
+    upload_dir_abs = os.path.join(app.config["STORAGE_DIR"], upload_subdir_rel)
+    os.makedirs(upload_dir_abs, exist_ok=True)
+
+    sha256_calc = hashlib.sha256()
+    with tempfile.NamedTemporaryFile(dir=upload_dir_abs, delete=False, suffix=".tmp") as tmp_file:
+        tmp_path = tmp_file.name
+        while True:
+            chunk = file_from_request.stream.read(65536)
+            if not chunk:
+                break
+            sha256_calc.update(chunk)
+            tmp_file.write(chunk)
+
+    sha256_hash = sha256_calc.hexdigest()
     db_path = app.config["DATABASE_PATH"]
 
     existing_entry = db_utils.get_media_file_by_sha(db_path, sha256_hash)
     if existing_entry:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
         return (
             jsonify(
                 {
@@ -332,11 +373,6 @@ def put_image(filename):
             200,
         )
 
-    today_str = datetime.datetime.now().strftime("%Y%m%d")
-    upload_subdir_rel = os.path.join("uploads", today_str)
-    upload_dir_abs = os.path.join(app.config["STORAGE_DIR"], upload_subdir_rel)
-    os.makedirs(upload_dir_abs, exist_ok=True)
-
     base, ext = os.path.splitext(s_filename)
     ext = ext.lower()
     final_filename_on_disk = f"{base}{ext}"
@@ -348,10 +384,14 @@ def put_image(filename):
         target_path = os.path.join(upload_dir_abs, final_filename_on_disk)
 
     try:
-        with open(target_path, "wb") as f_save:
-            f_save.write(file_contents)
-    except IOError as e:
+        os.replace(tmp_path, target_path)
+    except OSError as e:
         logging.error(f"Failed to save file: {e}")
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
         abort(500, description="Failed to save media to disk.")
 
     thumbnail_dir_abs = app.config["THUMBNAIL_DIR"]
@@ -406,7 +446,7 @@ def put_image(filename):
             logging.warning(f"Could not read metadata for uploaded file: {e}")
 
     settings = get_settings_mgr().get()
-    image_classifier = ImageClassifier(settings)
+    image_classifier = get_image_classifier(settings)
     tags = None
     if mime_type_upload and mime_type_upload.startswith("image/"):
         tags = image_classifier.classify_image(target_path)

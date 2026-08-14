@@ -100,6 +100,23 @@ class TestServerFlaskWithDB(unittest.TestCase):
 
         cls.client = flask_app.test_client()
 
+    def setUp(self):
+        self._initial_db_state = db_utils.get_all_media_files(self.db_path)
+
+    def tearDown(self):
+        test_img = os.path.join(self.test_dir, "test_image.jpg")
+        if os.path.exists(test_img):
+            try:
+                os.remove(test_img)
+            except OSError:
+                pass
+        current_entries = db_utils.get_all_media_files(self.db_path)
+        for sha in list(current_entries.keys()):
+            if sha not in self._initial_db_state:
+                db_utils.delete_media_file_by_sha(self.db_path, sha)
+        for sha, data in self._initial_db_state.items():
+            db_utils.add_or_update_media_file(self.db_path, data)
+
     @classmethod
     def tearDownClass(cls):
         db_utils.close_db_connection()
@@ -111,7 +128,7 @@ class TestServerFlaskWithDB(unittest.TestCase):
         response = self.client.get("/list")
         self.assertEqual(response.status_code, 200)
         returned_data = response.json
-        self.assertEqual(len(returned_data), 3)
+        self.assertEqual(len(returned_data), 2)
         self.assertIn(self.img1_sha256, returned_data)
         self.assertIn(self.vid1_sha256, returned_data)
 

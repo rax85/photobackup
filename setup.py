@@ -1,11 +1,18 @@
+import os
 from setuptools import setup, find_packages
+
+readme_path = os.path.join(os.path.dirname(__file__), "README.md")
+long_description = ""
+if os.path.exists(readme_path):
+    with open(readme_path, "r", encoding="utf-8") as f:
+        long_description = f.read()
 
 setup(
     name="media_server",
     version="0.2.0",
     author="AI Agent",
     description="A high-performance media server and responsive photo gallery.",
-    long_description=open("README.md").read() if open("README.md") else "",
+    long_description=long_description,
     long_description_content_type="text/markdown",
     packages=find_packages(exclude=["tests*"]),
     install_requires=[

@@ -1,4 +1,5 @@
 import os
+from threading import Lock
 from typing import List, Tuple
 from absl import logging
 from media_server.settings import Settings
@@ -68,6 +69,7 @@ class ImageClassifier:
         self.model = None
         self.preprocess_input = None
         self.decode_predictions = None
+        self._lock = Lock()
 
         if self.settings.tagging_model in ("Resnet", "Mobilenet"):
             self._initialize_model()
@@ -94,9 +96,16 @@ class ImageClassifier:
             )
             self.model = None
 
+    def unload(self) -> None:
+        """Unloads the model from memory and releases references."""
+        with self._lock:
+            self.model = None
+            self.preprocess_input = None
+            self.decode_predictions = None
+
     def classify_image(self, image_path: str) -> List[Tuple[str, float]]:
         """
-        Classifies an image at the given path.
+        Classifies an image at the given path. Thread-safe inference.
 
         Args:
             image_path: Path to the image file on disk.
@@ -113,7 +122,11 @@ class ImageClassifier:
             x = np.expand_dims(x, axis=0) if np else [x]
             x = self.preprocess_input(x) if self.preprocess_input else x
 
-            preds = self.model.predict(x)
+            with self._lock:
+                if not self.model:
+                    return []
+                preds = self.model.predict(x)
+
             decoded_preds = (
                 self.decode_predictions(preds, top=5) if self.decode_predictions else []
             )

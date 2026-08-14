@@ -87,6 +87,40 @@ class TestSmartSearch(unittest.TestCase):
         self.assertIn("sha_golden_gate", results)
         self.assertIn("sha_eiffel_tower", results)
 
+    def test_fts5_prefix_matching(self):
+        # Prefix matching test for FTS5 (e.g. 'eiff*' matches 'eiffel')
+        results = db_utils.search_media_files(self.db_path, "eiff")
+        self.assertEqual(len(results), 1)
+        self.assertIn("sha_eiffel_tower", results)
+
+        results_gold = db_utils.search_media_files(self.db_path, "gold")
+        self.assertEqual(len(results_gold), 1)
+        self.assertIn("sha_golden_gate", results_gold)
+
+    def test_fts5_multi_token_search(self):
+        # Multi-token search requires all tokens to match
+        results = db_utils.search_media_files(self.db_path, "Paris monument")
+        self.assertEqual(len(results), 1)
+        self.assertIn("sha_eiffel_tower", results)
+
+        # Non-matching combination
+        results_none = db_utils.search_media_files(self.db_path, "Paris sunset")
+        self.assertEqual(len(results_none), 0)
+
+    def test_fts5_trigger_update_and_delete(self):
+        # Verify FTS trigger update
+        db_utils.update_media_file_fields(
+            self.db_path, "sha_eiffel_tower", {"city": "Rome"}
+        )
+        results_rome = db_utils.search_media_files(self.db_path, "Rome")
+        self.assertEqual(len(results_rome), 1)
+        self.assertIn("sha_eiffel_tower", results_rome)
+
+        # Verify FTS trigger delete
+        db_utils.delete_media_file_by_sha(self.db_path, "sha_eiffel_tower")
+        results_deleted = db_utils.search_media_files(self.db_path, "Rome")
+        self.assertEqual(len(results_deleted), 0)
+
     def test_database_stats(self):
         stats = db_utils.get_database_stats(self.db_path)
         self.assertEqual(stats["total_count"], 3)

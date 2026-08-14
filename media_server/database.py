@@ -8,6 +8,26 @@ from absl import logging
 DATABASE_NAME = "media_cache.sqlite3"
 thread_local = threading.local()
 
+MEDIA_COLUMNS = [
+    "sha256_hex",
+    "filename",
+    "original_filename",
+    "file_path",
+    "last_modified",
+    "original_creation_date",
+    "thumbnail_file",
+    "width",
+    "height",
+    "latitude",
+    "longitude",
+    "city",
+    "country",
+    "mime_type",
+    "filesize",
+    "tags",
+    "tagging_model",
+]
+
 
 def get_db_path(storage_dir: Optional[str] = None) -> str:
     """
@@ -204,25 +224,7 @@ def add_or_update_media_file(db_path: str, media_data: Dict[str, Any]) -> None:
         if field not in media_data or media_data[field] is None:
             raise ValueError(f"Required field {field} missing or None in media_data")
 
-    columns = [
-        "sha256_hex",
-        "filename",
-        "original_filename",
-        "file_path",
-        "last_modified",
-        "original_creation_date",
-        "thumbnail_file",
-        "width",
-        "height",
-        "latitude",
-        "longitude",
-        "city",
-        "country",
-        "mime_type",
-        "filesize",
-        "tags",
-        "tagging_model",
-    ]
+    columns = MEDIA_COLUMNS
     values = [media_data.get(col) for col in columns]
 
     try:
@@ -255,7 +257,8 @@ def batch_add_or_update_media_files(
     db_path: str, media_data_list: List[Dict[str, Any]]
 ) -> None:
     """
-    Adds or updates a batch of media file records in a single transaction.
+    Adds or updates a batch of media file records in a single transaction,
+    resolving any path conflicts.
 
     Args:
         db_path: Path to database.
@@ -265,37 +268,29 @@ def batch_add_or_update_media_files(
         return
 
     conn = get_db_connection(db_path)
-    columns = [
-        "sha256_hex",
-        "filename",
-        "original_filename",
-        "file_path",
-        "last_modified",
-        "original_creation_date",
-        "thumbnail_file",
-        "width",
-        "height",
-        "latitude",
-        "longitude",
-        "city",
-        "country",
-        "mime_type",
-        "filesize",
-        "tags",
-        "tagging_model",
-    ]
+    columns = MEDIA_COLUMNS
     sql = (
         f"INSERT OR REPLACE INTO media_files ({', '.join(columns)}) "
         f"VALUES ({', '.join(['?'] * len(columns))})"
     )
 
     rows = []
+    conflict_checks = []
     for media_data in media_data_list:
         rows.append([media_data.get(col) for col in columns])
+        file_path = media_data.get("file_path")
+        sha = media_data.get("sha256_hex")
+        if file_path and sha:
+            conflict_checks.append((file_path, sha))
 
     try:
         with conn:
             cursor = conn.cursor()
+            if conflict_checks:
+                cursor.executemany(
+                    "DELETE FROM media_files WHERE file_path = ? AND sha256_hex != ?",
+                    conflict_checks,
+                )
             cursor.executemany(sql, rows)
     except sqlite3.Error as e:
         logging.error(f"Database error during batch add/update: {e}")
@@ -462,24 +457,7 @@ def update_media_file_fields(
     if not fields_to_update:
         return False
     conn = get_db_connection(db_path)
-    valid_columns = [
-        "filename",
-        "original_filename",
-        "file_path",
-        "last_modified",
-        "original_creation_date",
-        "thumbnail_file",
-        "width",
-        "height",
-        "latitude",
-        "longitude",
-        "city",
-        "country",
-        "mime_type",
-        "filesize",
-        "tags",
-        "tagging_model",
-    ]
+    valid_columns = [col for col in MEDIA_COLUMNS if col != "sha256_hex"]
     update_clauses = []
     update_values = []
     for col, val in fields_to_update.items():
