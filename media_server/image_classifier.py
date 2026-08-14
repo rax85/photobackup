@@ -21,13 +21,13 @@ def _load_ml_modules():
     global resnet_preprocess, resnet_decode, mobilenet_preprocess, mobilenet_decode
     global np
 
-    if np is None:
-        import numpy as _np
-
-        np = _np
-
     if ResNet50V2 is None or MobileNetV3Small is None:
         try:
+            if np is None:
+                import numpy as _np
+
+                np = _np
+
             if "KERAS_BACKEND" not in os.environ:
                 os.environ["KERAS_BACKEND"] = "torch"
             import keras  # noqa: F401
