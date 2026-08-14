@@ -3,6 +3,7 @@ import os
 import unittest
 from media_server.settings import Settings, SettingsManager
 
+
 class TestSettingsManager(unittest.TestCase):
     def setUp(self):
         self.test_file = "test_settings.json"
@@ -22,7 +23,7 @@ class TestSettingsManager(unittest.TestCase):
             rescan_interval=1200,
             tagging_model="Resnet",
             archival_backend="AWS",
-            archival_bucket="my-bucket"
+            archival_bucket="my-bucket",
         )
         manager.write_settings(new_settings)
 
@@ -32,12 +33,15 @@ class TestSettingsManager(unittest.TestCase):
         # Verify file is updated
         with open(self.test_file, "r") as f:
             data = json.load(f)
-        self.assertEqual(data, {
-            "rescan_interval": 1200,
-            "tagging_model": "Resnet",
-            "archival_backend": "AWS",
-            "archival_bucket": "my-bucket"
-        })
+        self.assertEqual(
+            data,
+            {
+                "rescan_interval": 1200,
+                "tagging_model": "Resnet",
+                "archival_backend": "AWS",
+                "archival_bucket": "my-bucket",
+            },
+        )
 
         # Verify reading from file works correctly
         new_manager = SettingsManager(self.test_file)
@@ -48,6 +52,7 @@ class TestSettingsManager(unittest.TestCase):
         manager = SettingsManager(self.test_file)
         manager.write_settings(Settings())
         self.assertTrue(os.path.exists(self.test_file))
+
 
 if __name__ == "__main__":
     unittest.main()

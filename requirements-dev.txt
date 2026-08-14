@@ -1,10 +1,6 @@
-# For development and running tests
-requests
-piexif
-keras
-torch
-torchvision
-torchaudio
-# Add other testing specific dependencies here, e.g.
-# pytest
-# coverage
+# Development and testing dependencies
+-r requirements.txt
+pytest>=8.0.0
+pytest-cov>=4.0.0
+flake8>=6.0.0
+black>=24.0.0
