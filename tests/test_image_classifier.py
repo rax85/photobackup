@@ -1,6 +1,10 @@
 import unittest
 from unittest.mock import patch, MagicMock
-import numpy as np
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 from media_server.image_classifier import ImageClassifier
 from media_server.settings import Settings
@@ -46,9 +50,9 @@ class TestImageClassifier(unittest.TestCase):
     @patch("media_server.image_classifier.ResNet50V2")
     def test_classify_image(self, mock_resnet, mock_image):
         # Test the image classification process
-        # Mock the model and its predictions
         mock_model_instance = mock_resnet.return_value
-        mock_model_instance.predict.return_value = np.random.rand(1, 1000)
+        dummy_preds = np.random.rand(1, 1000) if np else [[0.1] * 1000]
+        mock_model_instance.predict.return_value = dummy_preds
 
         # Mock the decode_predictions function
         with patch("media_server.image_classifier.resnet_decode") as mock_decode:
@@ -65,7 +69,12 @@ class TestImageClassifier(unittest.TestCase):
             # Mock image loading and preprocessing
             mock_img = MagicMock()
             mock_image.load_img.return_value = mock_img
-            mock_image.img_to_array.return_value = np.random.rand(224, 224, 3)
+            dummy_array = (
+                np.random.rand(224, 224, 3)
+                if np
+                else [[[0.1, 0.1, 0.1]] * 224] * 224
+            )
+            mock_image.img_to_array.return_value = dummy_array
 
             # Initialize the classifier and classify an image
             classifier = ImageClassifier(self.settings)
