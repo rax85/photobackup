@@ -573,3 +573,68 @@ def test_upload_statuses_duplicate_and_error_handling(app_server):
         expect(skip_toast).to_contain_text("Skipped 1 unsupported file(s)")
 
         browser.close()
+
+
+def test_slideshow_flow_and_navigation(app_server):
+    """Verify slideshow launch, random photo display, 5-second progress indicator, left/right navigation, and escape dismissal."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 800})
+        page.goto(app_server)
+
+        # 1. Start slideshow via header button
+        slideshow_btn = page.locator("#slideshowButton")
+        expect(slideshow_btn).to_be_visible()
+        slideshow_btn.click()
+
+        # 2. Overlay should open
+        overlay = page.locator("#slideshowOverlay")
+        expect(overlay).to_be_visible()
+
+        # 3. Progress indicator & image should be active
+        progress_fill = page.locator("#slideshowProgressFill")
+        expect(progress_fill).to_have_class("slideshow-progress-fill animating")
+
+        slide_img = page.locator("#slideshowImage")
+        expect(slide_img).to_be_visible()
+        src_first = slide_img.get_attribute("src")
+        assert src_first and src_first.startswith("/image/"), f"Unexpected slide image src: {src_first}"
+
+        # 4. Advance forward via Right Arrow key or Next button
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(300)
+
+        src_second = slide_img.get_attribute("src")
+        # Counter should show slide 2
+        counter = page.locator("#slideshowCounter")
+        expect(counter).to_contain_text("2 / ")
+
+        # 5. Go backwards via Left Arrow key
+        page.keyboard.press("ArrowLeft")
+        page.wait_for_timeout(300)
+        expect(counter).to_contain_text("1 / ")
+        assert slide_img.get_attribute("src") == src_first, "Did not return to first slide in history on ArrowLeft"
+
+        # 6. Click Next navigation button
+        page.locator("#slideshowNext").click()
+        page.wait_for_timeout(300)
+        expect(counter).to_contain_text("2 / ")
+
+        # 7. Toggle Pause / Play with Spacebar
+        play_pause_btn = page.locator("#slideshowPlayPause")
+        pause_icon = play_pause_btn.locator(".icon-pause")
+        play_icon = play_pause_btn.locator(".icon-play")
+        expect(pause_icon).to_be_visible()
+
+        page.keyboard.press("Space")
+        expect(play_icon).to_be_visible()
+
+        page.keyboard.press("Space")
+        expect(pause_icon).to_be_visible()
+
+        # 8. Dismiss slideshow via Escape key
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+        expect(overlay).to_be_hidden()
+
+        browser.close()

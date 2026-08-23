@@ -1115,12 +1115,306 @@ const SettingsModal = {
 };
 
 // --------------------------------------------------------------------------
+// Slideshow Manager (Random Images, 5-Second Timer, Subtle Progress Indicator)
+// --------------------------------------------------------------------------
+const SlideshowManager = {
+    overlay: null,
+    progressFill: null,
+    counter: null,
+    imageEl: null,
+    captionEl: null,
+    playPauseBtn: null,
+    prevBtn: null,
+    nextBtn: null,
+    closeBtn: null,
+
+    isOpen: false,
+    isPlaying: true,
+    slideDuration: 5000,
+    timerId: null,
+    startTime: 0,
+    remainingTime: 5000,
+
+    pool: [],
+    currentIndex: -1,
+    history: [],
+    historyCursor: -1,
+
+    init() {
+        this.overlay = document.getElementById('slideshowOverlay');
+        this.progressFill = document.getElementById('slideshowProgressFill');
+        this.counter = document.getElementById('slideshowCounter');
+        this.imageEl = document.getElementById('slideshowImage');
+        this.captionEl = document.getElementById('slideshowCaption');
+        this.playPauseBtn = document.getElementById('slideshowPlayPause');
+        this.prevBtn = document.getElementById('slideshowPrev');
+        this.nextBtn = document.getElementById('slideshowNext');
+        this.closeBtn = document.getElementById('slideshowClose');
+
+        const triggerBtn = document.getElementById('slideshowButton');
+        triggerBtn?.addEventListener('click', () => this.start());
+
+        this.closeBtn?.addEventListener('click', () => this.close());
+        this.prevBtn?.addEventListener('click', () => this.prev());
+        this.nextBtn?.addEventListener('click', () => this.next());
+        this.playPauseBtn?.addEventListener('click', () => this.togglePlayPause());
+
+        // Touch swipe gestures
+        let touchStartX = 0;
+        this.overlay?.addEventListener('touchstart', (e) => {
+            if (e.changedTouches && e.changedTouches[0]) {
+                touchStartX = e.changedTouches[0].screenX;
+            }
+        }, { passive: true });
+
+        this.overlay?.addEventListener('touchend', (e) => {
+            if (e.changedTouches && e.changedTouches[0]) {
+                const touchEndX = e.changedTouches[0].screenX;
+                const diff = touchEndX - touchStartX;
+                if (Math.abs(diff) > 40) {
+                    if (diff > 0) {
+                        this.prev();
+                    } else {
+                        this.next();
+                    }
+                }
+            }
+        }, { passive: true });
+    },
+
+    start() {
+        const sourceList = (AppState.filteredMedia && AppState.filteredMedia.length > 0)
+            ? AppState.filteredMedia
+            : AppState.allMedia;
+
+        const images = sourceList.filter(item => {
+            return !item.mime_type || !item.mime_type.startsWith('video/');
+        });
+
+        if (!images || images.length === 0) {
+            Toast.show('No images found for slideshow.', 'info');
+            return;
+        }
+
+        // Randomize images
+        this.pool = [...images];
+        for (let i = this.pool.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [this.pool[i], this.pool[j]] = [this.pool[j], this.pool[i]];
+        }
+
+        this.history = [];
+        this.historyCursor = -1;
+        this.currentIndex = -1;
+        this.isOpen = true;
+        this.isPlaying = true;
+        this.updatePlayPauseIcon();
+
+        if (this.overlay) {
+            this.overlay.style.display = 'flex';
+            this.overlay.focus();
+        }
+        document.body.style.overflow = 'hidden';
+
+        this.next();
+    },
+
+    close() {
+        if (!this.isOpen) return;
+        this.isOpen = false;
+        this.clearTimer();
+        if (this.overlay) {
+            this.overlay.style.display = 'none';
+        }
+        document.body.style.overflow = '';
+    },
+
+    next() {
+        if (!this.isOpen || this.pool.length === 0) return;
+
+        if (this.historyCursor < this.history.length - 1) {
+            this.historyCursor++;
+            this.showSlide(this.history[this.historyCursor]);
+        } else {
+            this.currentIndex = (this.currentIndex + 1) % this.pool.length;
+            this.history.push(this.currentIndex);
+            this.historyCursor = this.history.length - 1;
+            this.showSlide(this.currentIndex);
+        }
+    },
+
+    prev() {
+        if (!this.isOpen || this.pool.length === 0) return;
+
+        if (this.historyCursor > 0) {
+            this.historyCursor--;
+            this.showSlide(this.history[this.historyCursor]);
+        } else {
+            this.currentIndex = (this.currentIndex - 1 + this.pool.length) % this.pool.length;
+            this.history.unshift(this.currentIndex);
+            this.historyCursor = 0;
+            this.showSlide(this.currentIndex);
+        }
+    },
+
+    togglePlayPause() {
+        if (!this.isOpen) return;
+        if (this.isPlaying) {
+            this.pause();
+        } else {
+            this.resume();
+        }
+    },
+
+    pause() {
+        this.isPlaying = false;
+        this.updatePlayPauseIcon();
+        this.pauseTimer();
+    },
+
+    resume() {
+        this.isPlaying = true;
+        this.updatePlayPauseIcon();
+        this.resumeTimer();
+    },
+
+    updatePlayPauseIcon() {
+        const pauseIcon = this.playPauseBtn?.querySelector('.icon-pause');
+        const playIcon = this.playPauseBtn?.querySelector('.icon-play');
+        if (pauseIcon && playIcon) {
+            pauseIcon.style.display = this.isPlaying ? 'block' : 'none';
+            playIcon.style.display = this.isPlaying ? 'none' : 'block';
+            this.playPauseBtn.setAttribute('aria-label', this.isPlaying ? 'Pause slideshow' : 'Resume slideshow');
+        }
+    },
+
+    showSlide(poolIndex) {
+        const item = this.pool[poolIndex];
+        if (!item) return;
+
+        if (this.counter) {
+            this.counter.textContent = `${this.historyCursor + 1} / ${this.pool.length}`;
+        }
+
+        if (this.captionEl) {
+            let parts = [];
+            if (item.filename) parts.push(`<strong>${escapeHtml(item.filename)}</strong>`);
+            if (item.original_creation_date !== null && item.original_creation_date !== undefined) {
+                const d = new Date(item.original_creation_date * 1000);
+                parts.push(`📅 ${escapeHtml(d.toLocaleDateString())}`);
+            }
+            if (item.city) {
+                const loc = item.city + (item.country ? ', ' + item.country : '');
+                parts.push(`📍 ${escapeHtml(loc)}`);
+            }
+            if (item.tags) {
+                try {
+                    const parsed = typeof item.tags === 'string' ? JSON.parse(item.tags) : item.tags;
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        const tagStr = parsed.map(t => `#${escapeHtml(Array.isArray(t) ? t[0] : t)}`).join(' ');
+                        parts.push(tagStr);
+                    }
+                } catch {}
+            }
+            this.captionEl.innerHTML = parts.join(' · ');
+            this.captionEl.classList.toggle('visible', parts.length > 0);
+        }
+
+        if (this.imageEl) {
+            this.imageEl.classList.remove('active');
+            const newSrc = `/image/${item.sha256}`;
+            this.imageEl.src = newSrc;
+            this.imageEl.alt = item.filename || 'Photo';
+
+            if (this.imageEl.complete) {
+                this.imageEl.classList.add('active');
+            } else {
+                this.imageEl.onload = () => {
+                    if (this.isOpen) {
+                        this.imageEl.classList.add('active');
+                    }
+                };
+            }
+        }
+
+        this.resetTimer();
+    },
+
+    resetTimer() {
+        this.clearTimer();
+        if (!this.isPlaying) return;
+
+        this.remainingTime = this.slideDuration;
+        this.startTime = Date.now();
+
+        if (this.progressFill) {
+            this.progressFill.classList.remove('animating');
+            this.progressFill.style.width = '0%';
+            // Trigger reflow to restart CSS transition
+            void this.progressFill.offsetWidth;
+            this.progressFill.classList.add('animating');
+            this.progressFill.style.width = '100%';
+        }
+
+        this.timerId = setTimeout(() => {
+            if (this.isOpen && this.isPlaying) {
+                this.next();
+            }
+        }, this.slideDuration);
+    },
+
+    clearTimer() {
+        if (this.timerId) {
+            clearTimeout(this.timerId);
+            this.timerId = null;
+        }
+        if (this.progressFill) {
+            this.progressFill.classList.remove('animating');
+            this.progressFill.style.width = '0%';
+        }
+    },
+
+    pauseTimer() {
+        if (this.timerId) {
+            clearTimeout(this.timerId);
+            this.timerId = null;
+            const elapsed = Date.now() - this.startTime;
+            this.remainingTime = Math.max(0, this.slideDuration - elapsed);
+            if (this.progressFill) {
+                const computedWidth = (elapsed / this.slideDuration) * 100;
+                this.progressFill.classList.remove('animating');
+                this.progressFill.style.width = `${computedWidth}%`;
+            }
+        }
+    },
+
+    resumeTimer() {
+        if (this.remainingTime <= 0) {
+            this.next();
+            return;
+        }
+        this.startTime = Date.now();
+        if (this.progressFill) {
+            this.progressFill.classList.add('animating');
+            this.progressFill.style.transitionDuration = `${this.remainingTime}ms`;
+            this.progressFill.style.width = '100%';
+        }
+        this.timerId = setTimeout(() => {
+            if (this.isOpen && this.isPlaying) {
+                this.next();
+            }
+        }, this.remainingTime);
+    }
+};
+
+// --------------------------------------------------------------------------
 // Main Initialization on DOM Load
 // --------------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', () => {
     ThemeManager.init();
     UploadManager.init();
     SettingsModal.init();
+    SlideshowManager.init();
 
     // Type Filter Buttons (All / Photos / Videos)
     document.querySelectorAll('.filter-pill').forEach(pill => {
@@ -1156,10 +1450,27 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Keyboard Shortcuts ('/' to focus search, 'Esc' to clear/close modals)
+    // Keyboard Shortcuts ('/' to focus search, 'Esc' to clear/close modals, Arrow keys for slideshow)
     window.addEventListener('keydown', (e) => {
         const active = document.activeElement;
         const isInputFocused = active && (['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) || active.isContentEditable);
+
+        if (SlideshowManager.isOpen) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                SlideshowManager.close();
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                SlideshowManager.prev();
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                SlideshowManager.next();
+            } else if (e.key === ' ' || e.code === 'Space') {
+                e.preventDefault();
+                SlideshowManager.togglePlayPause();
+            }
+            return;
+        }
 
         if (e.key === '/' && !isInputFocused) {
             e.preventDefault();
