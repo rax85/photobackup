@@ -235,6 +235,31 @@ class TestServerFlaskWithDB(unittest.TestCase):
         self.assertEqual(db_entry.get("tagging_model"), "Resnet")
         self.assertIn("mock_tag", db_entry.get("tags"))
 
+    def test_put_portrait_jpeg_aspect_ratio(self):
+        import piexif
+        image_name = "test_portrait.jpeg"
+        img_byte_arr = io.BytesIO()
+        dummy_pil_img = Image.new("RGB", (600, 400), color="green")
+        exif_dict = {"0th": {piexif.ImageIFD.Orientation: 6}}
+        exif_bytes = piexif.dump(exif_dict)
+        dummy_pil_img.save(img_byte_arr, format="JPEG", exif=exif_bytes)
+        content_bytes = img_byte_arr.getvalue()
+        img_byte_arr.seek(0)
+        img_sha256 = hashlib.sha256(content_bytes).hexdigest()
+
+        response = self.client.put(
+            f"/image/{image_name}",
+            data={"file": (img_byte_arr, image_name)},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 201)
+
+        db_entry = db_utils.get_media_file_by_sha(self.db_path, img_sha256)
+        self.assertIsNotNone(db_entry)
+        # Orientation 6 should transpose 600x400 to 400x600 (portrait)
+        self.assertEqual(db_entry["width"], 400)
+        self.assertEqual(db_entry["height"], 600)
+
     def test_get_settings(self):
         response = self.client.get("/api/settings")
         self.assertEqual(response.status_code, 200)

@@ -476,12 +476,26 @@ function initPhotoSwipe() {
         });
     });
 
-    AppState.lightbox.on('close', () => {
-        document.querySelectorAll('.pswp-video-player').forEach(video => {
-            video.pause();
-            video.removeAttribute('src');
-            video.load();
-        });
+    // Adjust image dimensions dynamically if natural dimensions differ (e.g., EXIF orientation)
+    AppState.lightbox.on('loadComplete', (e) => {
+        const { slide, content } = e;
+        if (content && content.element && content.element instanceof HTMLImageElement) {
+            const img = content.element;
+            if (img.naturalWidth && img.naturalHeight) {
+                if (slide && (slide.width !== img.naturalWidth || slide.height !== img.naturalHeight)) {
+                    slide.width = img.naturalWidth;
+                    slide.height = img.naturalHeight;
+                    if (slide.data) {
+                        slide.data.width = img.naturalWidth;
+                        slide.data.height = img.naturalHeight;
+                    }
+                    if (slide.zoomLevels) {
+                        slide.zoomLevels.update(slide.width, slide.height, slide.panAreaSize);
+                    }
+                    slide.updateContentSize(true);
+                }
+            }
+        }
     });
 
     // Custom Caption Overlay

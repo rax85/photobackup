@@ -37,6 +37,7 @@ def create_dummy_file(
     image_details=None,
     exif_datetime_original_str=None,
     gps_info_dict=None,
+    orientation=None,
 ):
     filepath = os.path.join(dir_path, filename)
     os.makedirs(
@@ -51,7 +52,9 @@ def create_dummy_file(
                 image_details.get("color", "blue"),
             )
 
-            exif_dict = {"Exif": {}, "GPS": {}}
+            exif_dict = {"0th": {}, "Exif": {}, "GPS": {}}
+            if orientation is not None:
+                exif_dict["0th"][piexif.ImageIFD.Orientation] = orientation
             if exif_datetime_original_str:
                 exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = (
                     exif_datetime_original_str.encode("utf-8")
@@ -629,6 +632,32 @@ class TestMediaScannerWithDB(unittest.TestCase):
         self.assertIsNotNone(rebuilt_entry)
         self.assertEqual(rebuilt_entry["tags"], '[["rebuilt_tag", 0.95]]')
         self.assertEqual(rebuilt_entry["width"], 600)  # Re-extracted from image1.jpg (600, 400)
+
+    def test_scan_portrait_jpeg_aspect_ratio(self):
+        # Create a JPEG with raw dimensions 600x400 (landscape buffer) but EXIF orientation 6 (portrait)
+        portrait_file = create_dummy_file(
+            self.test_dir,
+            "portrait.jpeg",
+            image_details={"size": (600, 400), "format": "JPEG"},
+            orientation=6,
+        )
+        portrait_sha = calculate_sha256_file(portrait_file)
+
+        with mock.patch("media_server.image_classifier.ImageClassifier") as MockClassifier:
+            mock_classifier = MockClassifier.return_value
+            mock_classifier.settings.tagging_model = "Off"
+            media_scanner.scan_directory(
+                self.test_dir,
+                self.db_path,
+                mock_classifier,
+                rescan=False,
+            )
+
+        entry = db_utils.get_media_file_by_sha(self.db_path, portrait_sha)
+        self.assertIsNotNone(entry)
+        # Transposed width and height should be 400 and 600 (portrait orientation)
+        self.assertEqual(entry["width"], 400)
+        self.assertEqual(entry["height"], 600)
 
 
 if __name__ == "__main__":

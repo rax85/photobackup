@@ -550,11 +550,15 @@ def put_image(filename):
 
     if mime_type_upload and mime_type_upload.startswith("image/"):
         try:
-            from PIL import Image as PILImage
+            from PIL import Image as PILImage, ImageOps as PILImageOps
 
             with PILImage.open(target_path) as img:
-                image_width, image_height = img.size
                 exif_data = img.getexif()
+                try:
+                    transposed = PILImageOps.exif_transpose(img)
+                    image_width, image_height = transposed.size
+                except Exception:
+                    image_width, image_height = img.size
                 if exif_data:
                     date_time_original_tag = 36867
                     date_time_tag = 306

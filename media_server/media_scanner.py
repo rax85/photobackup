@@ -461,8 +461,12 @@ def _process_single_file(
         if mime_type and mime_type.startswith("image/"):
             try:
                 with Image.open(abs_file_path) as img:
-                    image_width, image_height = img.size
                     exif_data = img.getexif()
+                    try:
+                        transposed = ImageOps.exif_transpose(img)
+                        image_width, image_height = transposed.size
+                    except Exception:
+                        image_width, image_height = img.size
                     if exif_data:
                         date_time_original_tag, date_time_tag = 36867, 306
                         exif_date_str = exif_data.get(
