@@ -80,7 +80,13 @@ body {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     min-height: 100vh;
+    min-height: 100dvh;
     overflow-x: hidden;
+}
+
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 /* Typography */
@@ -109,7 +115,10 @@ button {
     position: sticky;
     top: 0;
     z-index: 50;
-    height: var(--header-height);
+    height: calc(var(--header-height) + env(safe-area-inset-top, 0px));
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-left: max(20px, env(safe-area-inset-left, 0px));
+    padding-right: max(20px, env(safe-area-inset-right, 0px));
     background: var(--bg-glass);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
@@ -117,8 +126,11 @@ button {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 20px;
     gap: 16px;
+}
+
+.drawer-toggle-btn {
+    display: none;
 }
 
 .header-left {
@@ -160,6 +172,7 @@ button {
 /* Search Box */
 .search-wrapper {
     flex: 1;
+    min-width: 0;
     max-width: 560px;
     display: flex;
     align-items: center;
@@ -167,6 +180,7 @@ button {
 
 .search-box {
     width: 100%;
+    min-width: 0;
     position: relative;
     display: flex;
     align-items: center;
@@ -191,6 +205,7 @@ button {
 
 .search-box input {
     flex: 1;
+    min-width: 0;
     background: transparent;
     border: none;
     outline: none;
@@ -361,6 +376,23 @@ button {
 .layout-container {
     display: flex;
     min-height: calc(100vh - var(--header-height) - 40px);
+    min-height: calc(100dvh - var(--header-height) - 40px);
+}
+
+/* Drawer Backdrop */
+.drawer-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    z-index: 105;
+    animation: fadeIn var(--transition-fast);
+}
+
+.drawer-backdrop.active {
+    display: block;
 }
 
 /* Timeline Sidebar */
@@ -368,8 +400,9 @@ button {
     width: var(--sidebar-width);
     flex-shrink: 0;
     position: sticky;
-    top: calc(var(--header-height) + 38px);
+    top: calc(var(--header-height) + 38px + env(safe-area-inset-top, 0px));
     height: calc(100vh - var(--header-height) - 38px);
+    height: calc(100dvh - var(--header-height) - 38px - env(safe-area-inset-top, 0px));
     overflow-y: auto;
     border-right: 1px solid var(--border-color);
     padding: 16px 12px;
@@ -666,9 +699,11 @@ button {
    -------------------------------------------------------------------------- */
 .upload-dock {
     position: fixed;
-    bottom: 24px;
-    right: 24px;
-    width: 360px;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    right: max(16px, env(safe-area-inset-right, 0px));
+    left: auto;
+    width: min(380px, calc(100vw - 32px));
+    max-width: 100%;
     background: var(--bg-surface);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-lg);
@@ -689,12 +724,21 @@ button {
 .dock-title {
     font-size: 0.88rem;
     font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .dock-close {
     color: var(--text-muted);
     font-size: 1rem;
-    padding: 4px;
+    padding: 4px 8px;
+    line-height: 1;
+    min-width: 32px;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 .dock-close:hover { color: var(--text-primary); }
 
@@ -712,34 +756,39 @@ button {
 }
 
 .dock-list {
-    max-height: 200px;
+    max-height: min(220px, 35dvh);
     overflow-y: auto;
     padding: 8px 16px;
     display: flex;
     flex-direction: column;
     gap: 8px;
     font-size: 0.8rem;
+    -webkit-overflow-scrolling: touch;
 }
 
 .dock-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
 }
 
 .dock-item-name {
+    flex: 1;
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 220px;
 }
 
 .dock-item-status {
     font-size: 0.75rem;
     font-weight: 600;
+    flex-shrink: 0;
 }
 .dock-item-status.success { color: var(--success); }
 .dock-item-status.error { color: var(--error); }
+.dock-item-status.duplicate { color: var(--accent); }
 
 /* --------------------------------------------------------------------------
    Settings Modal Dialog
@@ -748,12 +797,13 @@ button {
     position: fixed;
     inset: 0;
     z-index: 90;
-    background: rgba(0, 0, 0, 0.65);
+    background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 20px;
+    padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
     animation: fadeIn var(--transition-fast);
 }
 
@@ -763,6 +813,9 @@ button {
     border-radius: var(--radius-lg);
     width: 100%;
     max-width: 580px;
+    max-height: min(650px, calc(100dvh - 32px));
+    display: flex;
+    flex-direction: column;
     box-shadow: var(--shadow-lg);
     overflow: hidden;
 }
@@ -771,8 +824,9 @@ button {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 20px 24px;
+    padding: 16px 20px;
     border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
 }
 
 .modal-header h2 {
@@ -780,12 +834,13 @@ button {
 }
 
 .settings-form {
-    padding: 24px;
+    padding: 20px;
     display: flex;
     flex-direction: column;
-    gap: 24px;
-    max-height: 70vh;
+    gap: 20px;
+    flex: 1;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .settings-section {
@@ -862,8 +917,10 @@ button {
     align-items: center;
     justify-content: flex-end;
     gap: 12px;
-    padding-top: 16px;
+    padding: 16px 20px;
     border-top: 1px solid var(--border-color);
+    background: var(--bg-surface);
+    flex-shrink: 0;
 }
 
 .alert-box {
@@ -890,28 +947,33 @@ button {
    -------------------------------------------------------------------------- */
 .toast-container {
     position: fixed;
-    top: 80px;
-    right: 24px;
+    top: calc(var(--header-height) + 12px + env(safe-area-inset-top, 0px));
+    right: max(16px, env(safe-area-inset-right, 0px));
+    left: auto;
     z-index: 120;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
+    pointer-events: none;
 }
 
 .toast {
-    min-width: 280px;
-    max-width: 400px;
-    padding: 12px 18px;
+    pointer-events: auto;
+    width: auto;
+    min-width: 260px;
+    max-width: min(400px, calc(100vw - 32px));
+    padding: 12px 16px;
     border-radius: var(--radius-md);
     background: var(--bg-surface-raised);
     border: 1px solid var(--border-color);
     box-shadow: var(--shadow-md);
     color: var(--text-primary);
-    font-size: 0.88rem;
+    font-size: 0.85rem;
     display: flex;
     align-items: center;
     justify-content: space-between;
     animation: toastSlideIn var(--transition-base);
+    word-break: break-word;
 }
 
 .toast.success { border-left: 4px solid var(--success); }
@@ -938,21 +1000,28 @@ button {
    -------------------------------------------------------------------------- */
 .pswp-custom-caption {
     position: absolute;
-    bottom: 20px;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
     left: 50%;
     transform: translateX(-50%);
     background: rgba(15, 23, 42, 0.85);
     backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.15);
-    padding: 10px 20px;
+    padding: 8px 16px;
     border-radius: var(--radius-full);
     color: #ffffff;
-    font-size: 0.85rem;
+    font-size: 0.8rem;
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 12px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     z-index: 10;
+    max-width: calc(100vw - 32px);
+    white-space: normal;
+    text-align: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    pointer-events: none;
 }
 
 .pswp-caption-date { font-weight: 600; }
@@ -981,6 +1050,7 @@ button {
 .pswp-video-player {
     max-width: 90vw;
     max-height: 82vh;
+    max-height: 82dvh;
     border-radius: var(--radius-md);
     box-shadow: 0 12px 48px rgba(0, 0, 0, 0.85);
     background: #000000;
@@ -1004,14 +1074,78 @@ button {
     .drawer-toggle-btn { display: flex; }
     .close-drawer-btn { display: flex; }
 
+    .app-header {
+        padding-left: max(12px, env(safe-area-inset-left, 0px));
+        padding-right: max(12px, env(safe-area-inset-right, 0px));
+        gap: 10px;
+        height: calc(56px + env(safe-area-inset-top, 0px));
+    }
+
+    .header-left {
+        gap: 8px;
+        flex-shrink: 0;
+    }
+
+    .brand-title {
+        display: none;
+    }
+
+    .header-right {
+        gap: 6px;
+        flex-shrink: 0;
+    }
+
+    .filter-group {
+        display: none;
+    }
+
+    .search-kbd {
+        display: none;
+    }
+
+    .search-wrapper {
+        max-width: none;
+    }
+
+    .search-box {
+        padding: 5px 10px;
+    }
+
+    .search-box input {
+        font-size: 0.82rem;
+    }
+
+    .icon-button {
+        width: 36px;
+        height: 36px;
+    }
+
+    #uploadButton {
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        border-radius: var(--radius-full);
+        justify-content: center;
+        gap: 0;
+        flex-shrink: 0;
+    }
+
+    .upload-btn-text {
+        display: none;
+    }
+
     .timeline-sidebar {
         position: fixed;
         left: -100%;
         top: 0;
         bottom: 0;
         z-index: 110;
-        width: 280px;
+        width: min(300px, 85vw);
         height: 100vh;
+        height: 100dvh;
+        padding-top: max(16px, env(safe-area-inset-top, 0px));
+        padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+        padding-left: max(12px, env(safe-area-inset-left, 0px));
         background: var(--bg-surface);
         box-shadow: var(--shadow-lg);
         transition: left var(--transition-base);
@@ -1030,15 +1164,113 @@ button {
         gap: 8px;
     }
 
-    .filter-group {
-        display: none;
+    .stats-bar {
+        padding: 6px 14px;
+        font-size: 0.76rem;
+    }
+}
+
+@media (max-width: 640px) {
+    .toast-container {
+        left: 16px;
+        right: 16px;
+        align-items: center;
     }
 
-    .search-wrapper {
-        max-width: none;
+    .toast {
+        width: 100%;
+        max-width: 100%;
+    }
+}
+
+@media (max-width: 480px) {
+    .app-header {
+        padding-left: max(8px, env(safe-area-inset-left, 0px));
+        padding-right: max(8px, env(safe-area-inset-right, 0px));
+        gap: 6px;
     }
 
-    .brand-title {
+    .header-left {
+        gap: 6px;
+    }
+
+    .brand-icon {
+        width: 30px;
+        height: 30px;
+    }
+
+    .header-right {
+        gap: 4px;
+    }
+
+    .icon-button,
+    #uploadButton {
+        width: 34px;
+        height: 34px;
+    }
+
+    .search-box {
+        padding: 4px 8px;
+    }
+
+    .search-icon {
+        margin-right: 6px;
+        width: 15px;
+        height: 15px;
+    }
+
+    .modal-overlay {
+        padding: 0;
+        align-items: flex-end;
+    }
+
+    .modal-card {
+        max-width: 100%;
+        max-height: calc(100dvh - 24px);
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+        border-left: none;
+        border-right: none;
+        border-bottom: none;
+    }
+
+    .input-with-suffix {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .input-with-suffix input {
+        width: 100%;
+    }
+}
+
+@media (max-width: 360px) {
+    .app-header {
+        padding-left: max(6px, env(safe-area-inset-left, 0px));
+        padding-right: max(6px, env(safe-area-inset-right, 0px));
+        gap: 4px;
+    }
+
+    .header-left {
+        gap: 4px;
+    }
+
+    .brand-icon {
+        width: 28px;
+        height: 28px;
+    }
+
+    .icon-button,
+    #uploadButton {
+        width: 32px;
+        height: 32px;
+    }
+
+    .header-right {
+        gap: 3px;
+    }
+
+    #rescanButton {
         display: none;
     }
 }

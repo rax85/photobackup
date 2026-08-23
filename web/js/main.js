@@ -5,14 +5,16 @@ import PhotoSwipeLightbox from './photoswipe-lightbox.esm.js';
 // ==========================================================================
 
 const AppState = {
-    allMedia: [],          // Raw array from API
-    filteredMedia: [],     // Current filtered array
+    allMedia: [],          // Raw array of all media items
+    filteredMedia: [],     // Current filtered media items
     settings: {},
     activeType: 'all',     // 'all' | 'image' | 'video'
     searchQuery: '',
     lightbox: null,
     scrollObserver: null,
     virtualizer: null,
+    paginationController: null,
+    deferGalleryRender: false,
 };
 
 // --------------------------------------------------------------------------
@@ -20,18 +22,26 @@ const AppState = {
 // --------------------------------------------------------------------------
 function escapeHtml(str) {
     if (str === null || str === undefined) return '';
-    const el = document.createElement('span');
-    el.textContent = String(str);
-    return el.innerHTML;
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
 // --------------------------------------------------------------------------
 // Toast Notification Manager
 // --------------------------------------------------------------------------
 const Toast = {
+    MAX_TOASTS: 3,
     show(message, type = 'info', duration = 3500) {
         const container = document.getElementById('toastContainer');
         if (!container) return;
+
+        while (container.children.length >= this.MAX_TOASTS) {
+            container.firstElementChild?.remove();
+        }
 
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
@@ -40,12 +50,17 @@ const Toast = {
         toast.appendChild(msgSpan);
         container.appendChild(toast);
 
-        setTimeout(() => {
+        const removeTimer = setTimeout(() => {
             toast.style.opacity = '0';
             toast.style.transform = 'translateX(20px)';
             toast.style.transition = 'all 0.3s ease';
             setTimeout(() => toast.remove(), 300);
         }, duration);
+
+        toast.addEventListener('click', () => {
+            clearTimeout(removeTimer);
+            toast.remove();
+        });
     }
 };
 
@@ -55,9 +70,15 @@ const Toast = {
 const ThemeManager = {
     init() {
         const savedTheme = localStorage.getItem('photobackup_theme');
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        const theme = savedTheme || (prefersDark ? 'dark' : 'light');
-        this.setTheme(theme);
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)');
+        const initialTheme = savedTheme || (prefersDark.matches ? 'dark' : 'light');
+        this.applyTheme(initialTheme);
+
+        prefersDark.addEventListener('change', (e) => {
+            if (!localStorage.getItem('photobackup_theme')) {
+                this.applyTheme(e.matches ? 'dark' : 'light');
+            }
+        });
 
         const toggleBtn = document.getElementById('themeToggle');
         if (toggleBtn) {
@@ -70,8 +91,14 @@ const ThemeManager = {
     },
 
     setTheme(theme) {
+        try {
+            localStorage.setItem('photobackup_theme', theme);
+        } catch {}
+        this.applyTheme(theme);
+    },
+
+    applyTheme(theme) {
         document.documentElement.dataset.theme = theme;
-        localStorage.setItem('photobackup_theme', theme);
         const iconDark = document.querySelector('.theme-icon-dark');
         const iconLight = document.querySelector('.theme-icon-light');
         if (iconDark && iconLight) {
@@ -119,7 +146,7 @@ function groupMediaByMonthYear(items) {
     const groups = new Map();
     items.forEach(item => {
         let monthYearKey = 'Unknown Date';
-        if (item.original_creation_date) {
+        if (item.original_creation_date !== null && item.original_creation_date !== undefined && !isNaN(item.original_creation_date)) {
             const date = new Date(item.original_creation_date * 1000);
             monthYearKey = date.toLocaleString('default', { month: 'long', year: 'numeric' });
         }
@@ -129,6 +156,48 @@ function groupMediaByMonthYear(items) {
         groups.get(monthYearKey).push(item);
     });
     return groups;
+}
+
+function formatSlideData(item) {
+    const isVideo = item.mime_type && item.mime_type.startsWith('video/');
+    if (isVideo) {
+        return {
+            type: 'html',
+            isVideo: true,
+            width: item.width || 1920,
+            height: item.height || 1080,
+            w: item.width || 1920,
+            h: item.height || 1080,
+            sha256: item.sha256,
+            mimeType: item.mime_type || 'video/mp4',
+            videoSrc: `/image/${item.sha256}`,
+            filename: item.filename,
+            original_creation_date: item.original_creation_date,
+            city: item.city,
+            country: item.country,
+            tags: item.tags,
+            html: `
+                <div class="pswp-video-container">
+                    <video class="pswp-video-player" src="/image/${item.sha256}" poster="/thumbnail/${item.sha256}" controls playsinline preload="metadata"></video>
+                </div>
+            `,
+        };
+    }
+
+    return {
+        src: `/image/${item.sha256}`,
+        msrc: `/thumbnail/${item.sha256}`,
+        width: item.width || 1920,
+        height: item.height || 1080,
+        sha256: item.sha256,
+        mimeType: item.mime_type || 'image/jpeg',
+        filename: item.filename,
+        original_creation_date: item.original_creation_date,
+        city: item.city,
+        country: item.country,
+        tags: item.tags,
+        alt: item.filename || 'Photo',
+    };
 }
 
 // Card DOM Factory
@@ -146,9 +215,10 @@ function createCardElement(item) {
     link.dataset.mimeType = item.mime_type || '';
     link.dataset.filename = item.filename || '';
 
-    if (isVideo) {
-        link.dataset.type = 'html';
-    }
+    link.addEventListener('click', (e) => {
+        e.preventDefault();
+        openLightboxAtSha(item.sha256);
+    });
 
     // Thumbnail Image
     const img = document.createElement('img');
@@ -184,7 +254,7 @@ function createCardElement(item) {
         citySpan.textContent = `📍 ${item.city}`;
         meta.appendChild(citySpan);
     }
-    if (item.original_creation_date) {
+    if (item.original_creation_date !== null && item.original_creation_date !== undefined) {
         const d = new Date(item.original_creation_date * 1000);
         const dateSpan = document.createElement('span');
         dateSpan.textContent = `📅 ${d.toLocaleDateString()}`;
@@ -215,6 +285,14 @@ function createCardElement(item) {
     return card;
 }
 
+function openLightboxAtSha(targetSha) {
+    if (!AppState.lightbox) return;
+    const index = AppState.filteredMedia.findIndex(m => m.sha256 === targetSha);
+    const validIndex = index >= 0 ? index : 0;
+    const dataSource = AppState.filteredMedia.map(formatSlideData);
+    AppState.lightbox.loadAndOpen(validIndex, dataSource);
+}
+
 // Section-level Viewport Virtualizer for 35,000+ items
 const SectionVirtualizer = {
     observer: null,
@@ -235,16 +313,14 @@ const SectionVirtualizer = {
                 if (entry.isIntersecting) {
                     this.mountSection(section, sectionId);
                 } else {
-                    const rect = entry.boundingClientRect;
-                    const isFar = (rect.top < -3000 || rect.bottom > window.innerHeight + 3000);
-                    if (isFar && this.renderedSections.size > 6) {
+                    if (this.renderedSections.size > 4) {
                         this.unmountSection(section, sectionId);
                     }
                 }
             });
         }, {
-            rootMargin: '800px 0px 800px 0px',
-            threshold: 0.01
+            rootMargin: '1000px 0px 1000px 0px',
+            threshold: 0
         });
     },
 
@@ -308,10 +384,15 @@ function renderGallery(items) {
 
     let sectionIndex = 0;
     for (const [monthYear, itemsInGroup] of groupedMedia) {
-        const sectionId = `section-${monthYear.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase()}`;
+        const safeSlug = monthYear.replace(/[^a-zA-Z0-9]/g, '_');
+        const sectionId = `sec_${sectionIndex}_${safeSlug}`;
         const monthSection = document.createElement('section');
         monthSection.className = 'month-section';
         monthSection.id = sectionId;
+
+        // Pre-set estimated minimum height to prevent scroll jumps
+        const estimatedRows = Math.max(1, Math.ceil(itemsInGroup.length / 5));
+        monthSection.style.minHeight = `${estimatedRows * 200 + 50}px`;
 
         const header = document.createElement('h2');
         header.className = 'month-year-divider-header';
@@ -321,7 +402,7 @@ function renderGallery(items) {
         const gridDiv = document.createElement('div');
         gridDiv.className = 'photo-items-grid';
 
-        // Pre-render the first 2 visible sections immediately for instant paint
+        // Pre-render first 2 sections immediately for instant paint
         if (sectionIndex < 2) {
             const fragment = document.createDocumentFragment();
             itemsInGroup.forEach(item => {
@@ -340,7 +421,6 @@ function renderGallery(items) {
 
     renderTimelineSidebar(groupedMedia);
     setupScrollSpy();
-    initPhotoSwipe();
 }
 
 // --------------------------------------------------------------------------
@@ -359,15 +439,17 @@ function renderTimelineSidebar(groupedMedia) {
     const ul = document.createElement('ul');
     ul.className = 'timeline-list';
 
+    let sectionIndex = 0;
     for (const [monthYear, items] of groupedMedia) {
-        const sectionId = `section-${monthYear.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase()}`;
+        const safeSlug = monthYear.replace(/[^a-zA-Z0-9]/g, '_');
+        const sectionId = `sec_${sectionIndex}_${safeSlug}`;
         const li = document.createElement('li');
         const a = document.createElement('a');
         a.className = 'timeline-link';
         a.href = `#${sectionId}`;
         a.dataset.sectionId = sectionId;
         a.innerHTML = `
-            <span>${monthYear}</span>
+            <span>${escapeHtml(monthYear)}</span>
             <span class="timeline-count-badge">${items.length}</span>
         `;
 
@@ -375,17 +457,19 @@ function renderTimelineSidebar(groupedMedia) {
             e.preventDefault();
             const target = document.getElementById(sectionId);
             if (target) {
-                // Ensure section is mounted before scrolling
                 SectionVirtualizer.mountSection(target, sectionId);
                 target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                if (window.innerWidth < 768) {
+                if (window.innerWidth <= 768) {
                     document.getElementById('navigation-sidebar')?.classList.remove('expanded');
+                    document.getElementById('drawerBackdrop')?.classList.remove('active');
+                    document.body.style.overflow = '';
                 }
             }
         });
 
         li.appendChild(a);
         ul.appendChild(li);
+        sectionIndex++;
     }
     container.appendChild(ul);
 }
@@ -398,22 +482,36 @@ function setupScrollSpy() {
     const sections = document.querySelectorAll('.month-section');
     if (!sections.length) return;
 
+    const visibleSections = new Set();
+
     AppState.scrollObserver = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
-                const id = entry.target.id;
-                document.querySelectorAll('.timeline-link').forEach(link => {
-                    if (link.dataset.sectionId === id) {
-                        link.classList.add('active');
-                    } else {
-                        link.classList.remove('active');
-                    }
-                });
+                visibleSections.add(entry.target.id);
+            } else {
+                visibleSections.delete(entry.target.id);
             }
         });
+
+        if (visibleSections.size > 0) {
+            // Find topmost visible section in DOM order
+            let topSectionId = null;
+            for (const section of sections) {
+                if (visibleSections.has(section.id)) {
+                    topSectionId = section.id;
+                    break;
+                }
+            }
+
+            if (topSectionId) {
+                document.querySelectorAll('.timeline-link').forEach(link => {
+                    link.classList.toggle('active', link.dataset.sectionId === topSectionId);
+                });
+            }
+        }
     }, {
-        rootMargin: '-80px 0px -70% 0px',
-        threshold: 0.1
+        rootMargin: '-70px 0px -70% 0px',
+        threshold: 0
     });
 
     sections.forEach(s => AppState.scrollObserver.observe(s));
@@ -428,8 +526,6 @@ function initPhotoSwipe() {
     }
 
     AppState.lightbox = new PhotoSwipeLightbox({
-        gallery: '#gallery-grid',
-        children: '.gallery-item > a',
         pswpModule: () => import('./photoswipe.esm.js'),
         initialZoomLevel: 'fit',
         secondaryZoomLevel: 1.5,
@@ -437,21 +533,12 @@ function initPhotoSwipe() {
         showHideAnimationType: 'zoom',
     });
 
-    // Custom Slide Content for Videos
-    AppState.lightbox.addFilter('itemData', (itemData) => {
-        const el = itemData.element;
-        if (el && el.dataset.isVideo === 'true') {
-            itemData.type = 'html';
-            itemData.isVideo = true;
-            itemData.videoSrc = el.href;
-            itemData.mimeType = el.dataset.mimeType || 'video/mp4';
-            itemData.html = `
-                <div class="pswp-video-container">
-                    <video class="pswp-video-player pswp-prevent-swipe" src="${el.href}" controls autoplay playsinline preload="auto"></video>
-                </div>
-            `;
+    // Prevent PhotoSwipe from capturing pointer/touch events on video player & controls
+    AppState.lightbox.addFilter('preventPointerEvent', (preventPointerEvent, event) => {
+        if (event.target && event.target.closest('.pswp-video-player, .pswp-video-container')) {
+            return false;
         }
-        return itemData;
+        return preventPointerEvent;
     });
 
     // Prevent zooming video slides
@@ -462,7 +549,25 @@ function initPhotoSwipe() {
         return isZoomable;
     });
 
-    // Pause videos when changing slide or closing
+    // Manage video playback lifecycle: only play active slide video, pause inactive
+    AppState.lightbox.on('contentActivate', ({ content }) => {
+        if (content && content.element) {
+            const video = content.element.querySelector('.pswp-video-player');
+            if (video) {
+                video.play().catch(() => {});
+            }
+        }
+    });
+
+    AppState.lightbox.on('contentDeactivate', ({ content }) => {
+        if (content && content.element) {
+            const video = content.element.querySelector('.pswp-video-player');
+            if (video) {
+                video.pause();
+            }
+        }
+    });
+
     AppState.lightbox.on('change', () => {
         const pswp = AppState.lightbox.pswp;
         if (!pswp) return;
@@ -474,6 +579,32 @@ function initPhotoSwipe() {
                 video.play().catch(() => {});
             }
         });
+    });
+
+    // Clean up hardware video decoders and network buffers on content destroy
+    AppState.lightbox.on('contentDestroy', ({ content }) => {
+        if (content && content.element) {
+            const video = content.element.querySelector('.pswp-video-player');
+            if (video) {
+                video.pause();
+                video.removeAttribute('src');
+                video.load();
+            }
+        }
+    });
+
+    AppState.lightbox.on('close', () => {
+        document.querySelectorAll('.pswp-video-player').forEach(video => {
+            video.pause();
+            video.removeAttribute('src');
+            video.load();
+        });
+
+        // Re-render gallery if new items arrived while lightbox was open
+        if (AppState.deferGalleryRender) {
+            AppState.deferGalleryRender = false;
+            applyFilters();
+        }
     });
 
     // Adjust image dimensions dynamically if natural dimensions differ (e.g., EXIF orientation)
@@ -491,6 +622,9 @@ function initPhotoSwipe() {
                     }
                     if (slide.zoomLevels) {
                         slide.zoomLevels.update(slide.width, slide.height, slide.panAreaSize);
+                        if (slide.currZoomLevel !== slide.zoomLevels.initial) {
+                            slide.zoomTo(slide.zoomLevels.initial, null, 0);
+                        }
                     }
                     slide.updateContentSize(true);
                 }
@@ -506,19 +640,14 @@ function initPhotoSwipe() {
             isButton: false,
             appendTo: 'root',
             onInit: (el, pswp) => {
-                pswp.on('change', () => {
-                    const currSlide = pswp.currSlide;
-                    if (!currSlide || !currSlide.data.element) {
-                        el.innerHTML = '';
-                        return;
-                    }
+                el.className = 'pswp__custom-caption pswp-custom-caption';
 
-                    const sha256 = currSlide.data.element.dataset.sha256;
-                    const item = AppState.allMedia.find(m => m.sha256 === sha256);
+                const updateCaption = () => {
+                    const item = AppState.filteredMedia[pswp.currIndex] || pswp.currSlide?.data;
                     if (item) {
                         let parts = [];
                         if (item.filename) parts.push(`<strong>${escapeHtml(item.filename)}</strong>`);
-                        if (item.original_creation_date) {
+                        if (item.original_creation_date !== null && item.original_creation_date !== undefined) {
                             const d = new Date(item.original_creation_date * 1000);
                             parts.push(`<span class="pswp-caption-date">📅 ${escapeHtml(d.toLocaleDateString())}</span>`);
                         }
@@ -535,11 +664,16 @@ function initPhotoSwipe() {
                                 }
                             } catch { /* ignore */ }
                         }
-                        el.innerHTML = `<div class="pswp-custom-caption">${parts.join(' · ')}</div>`;
+                        el.innerHTML = parts.join(' · ');
+                        el.style.display = parts.length > 0 ? 'flex' : 'none';
                     } else {
                         el.innerHTML = '';
+                        el.style.display = 'none';
                     }
-                });
+                };
+
+                pswp.on('change', updateCaption);
+                updateCaption();
             }
         });
     });
@@ -551,6 +685,12 @@ function initPhotoSwipe() {
 // API Fetching & Progressive Loading
 // --------------------------------------------------------------------------
 async function fetchMediaList() {
+    if (AppState.paginationController) {
+        AppState.paginationController.abort();
+    }
+    AppState.paginationController = new AbortController();
+    const signal = AppState.paginationController.signal;
+
     const galleryGrid = document.getElementById('gallery-grid');
     if (galleryGrid && (!AppState.allMedia || AppState.allMedia.length === 0)) {
         galleryGrid.innerHTML = `
@@ -561,8 +701,7 @@ async function fetchMediaList() {
     }
 
     try {
-        // Fast path: fetch initial page of 200 items for sub-50ms initial paint
-        const initialRes = await fetch('/api/media?limit=200&offset=0');
+        const initialRes = await fetch('/api/media?limit=200&offset=0', { signal });
         if (initialRes.ok) {
             const initialData = await initialRes.json();
             if (initialData.items && initialData.items.length > 0) {
@@ -574,24 +713,25 @@ async function fetchMediaList() {
                 updateStatsBar();
 
                 if (initialData.has_more) {
-                    fetchRemainingMedia();
+                    fetchRemainingMedia(signal);
                     return;
                 }
             }
         }
 
         // Full fetch fallback
-        const res = await fetch('/list');
+        const res = await fetch('/list', { signal });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         AppState.allMedia = Object.entries(data).map(([sha256, info]) => ({
             sha256,
             ...info
         }));
-        AppState.allMedia.sort((a, b) => (b.original_creation_date || 0) - (a.original_creation_date || 0));
+        AppState.allMedia.sort((a, b) => (b.original_creation_date ?? -Infinity) - (a.original_creation_date ?? -Infinity));
         applyFilters();
         updateStatsBar();
     } catch (err) {
+        if (err.name === 'AbortError') return;
         console.error('Error loading media:', err);
         Toast.show('Error loading media library. Check server connection.', 'error');
         if (galleryGrid && (!AppState.allMedia || AppState.allMedia.length === 0)) {
@@ -600,31 +740,47 @@ async function fetchMediaList() {
     }
 }
 
-async function fetchRemainingMedia() {
+async function fetchRemainingMedia(signal) {
     try {
         let offset = AppState.allMedia.length;
         const limit = 500;
         let hasMore = true;
+        const knownShas = new Set(AppState.allMedia.map(m => m.sha256));
 
         while (hasMore) {
-            const res = await fetch(`/api/media?limit=${limit}&offset=${offset}`);
+            if (signal?.aborted) return;
+            const res = await fetch(`/api/media?limit=${limit}&offset=${offset}`, { signal });
             if (!res.ok) break;
             const data = await res.json();
             if (!data.items || data.items.length === 0) break;
 
-            const newItems = data.items.map(item => ({
-                sha256: item.sha256_hex,
-                ...item
-            }));
-            AppState.allMedia.push(...newItems);
-            offset += newItems.length;
-            hasMore = Boolean(data.has_more);
+            let addedCount = 0;
+            for (const item of data.items) {
+                const sha = item.sha256_hex;
+                if (!knownShas.has(sha)) {
+                    knownShas.add(sha);
+                    AppState.allMedia.push({
+                        sha256: sha,
+                        ...item
+                    });
+                    addedCount++;
+                }
+            }
+
+            offset += data.items.length;
+            hasMore = Boolean(data.has_more) && addedCount > 0;
         }
 
-        AppState.allMedia.sort((a, b) => (b.original_creation_date || 0) - (a.original_creation_date || 0));
-        applyFilters();
+        AppState.allMedia.sort((a, b) => (b.original_creation_date ?? -Infinity) - (a.original_creation_date ?? -Infinity));
+
+        if (AppState.lightbox?.pswp?.isOpen) {
+            AppState.deferGalleryRender = true;
+        } else {
+            applyFilters();
+        }
         updateStatsBar();
-    } catch {
+    } catch (err) {
+        if (err.name === 'AbortError') return;
         /* background fetch failed silently */
     }
 }
@@ -659,6 +815,14 @@ function applyFilters() {
 // Batch Upload Manager & Drag-Drop
 // --------------------------------------------------------------------------
 const UploadManager = {
+    ALLOWED_EXTENSIONS: ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'],
+    queue: [],
+    isProcessing: false,
+    CONCURRENCY: 3,
+    totalQueued: 0,
+    completedCount: 0,
+    successCount: 0,
+
     init() {
         const uploadBtn = document.getElementById('uploadButton');
         const fileInput = document.getElementById('fileInput');
@@ -668,7 +832,7 @@ const UploadManager = {
             uploadBtn.addEventListener('click', () => fileInput.click());
             fileInput.addEventListener('change', (e) => {
                 if (e.target.files && e.target.files.length > 0) {
-                    this.uploadFiles(Array.from(e.target.files));
+                    this.enqueueFiles(Array.from(e.target.files));
                     fileInput.value = '';
                 }
             });
@@ -699,7 +863,7 @@ const UploadManager = {
                 dragCounter = 0;
                 dropOverlay.style.display = 'none';
                 if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                    this.uploadFiles(Array.from(e.dataTransfer.files));
+                    this.enqueueFiles(Array.from(e.dataTransfer.files));
                 }
             });
         }
@@ -709,25 +873,31 @@ const UploadManager = {
         });
     },
 
-    async uploadFiles(files) {
+    enqueueFiles(files) {
+        const validFiles = files.filter(file => {
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            return this.ALLOWED_EXTENSIONS.includes(ext);
+        });
+
+        if (validFiles.length < files.length) {
+            Toast.show(`Skipped ${files.length - validFiles.length} unsupported file(s).`, 'info');
+        }
+
+        if (!validFiles.length) return;
+
         const dock = document.getElementById('uploadDock');
-        const dockTitle = document.getElementById('uploadDockTitle');
-        const dockProgress = document.getElementById('dockProgressBar');
         const dockList = document.getElementById('uploadDockList');
+        if (dock) dock.style.display = 'block';
 
-        if (!dock || !files.length) return;
-        dock.style.display = 'block';
-        dockList.innerHTML = '';
+        if (!this.isProcessing) {
+            this.totalQueued = 0;
+            this.completedCount = 0;
+            this.successCount = 0;
+            if (dockList) dockList.innerHTML = '';
+        }
 
-        const total = files.length;
-        let completed = 0;
-        let successCount = 0;
-
-        dockTitle.textContent = `Uploading ${total} file(s)...`;
-        dockProgress.style.width = '0%';
-
-        for (let i = 0; i < total; i++) {
-            const file = files[i];
+        validFiles.forEach(file => {
+            const index = this.totalQueued++;
             const itemRow = document.createElement('div');
             itemRow.className = 'dock-item';
 
@@ -737,70 +907,94 @@ const UploadManager = {
 
             const statusSpan = document.createElement('span');
             statusSpan.className = 'dock-item-status';
-            statusSpan.id = `status-${i}`;
+            statusSpan.id = `dock-status-${index}`;
             statusSpan.textContent = 'Queued...';
 
             itemRow.appendChild(nameSpan);
             itemRow.appendChild(statusSpan);
-            dockList.appendChild(itemRow);
-        }
+            dockList?.appendChild(itemRow);
 
-        const CONCURRENCY = 3;
-        let currentIndex = 0;
+            this.queue.push({ file, index });
+        });
 
-        const uploadWorker = async () => {
-            while (currentIndex < total) {
-                const i = currentIndex++;
-                const file = files[i];
-                const statusEl = document.getElementById(`status-${i}`);
-                if (statusEl) statusEl.textContent = 'Uploading...';
+        this.updateDockProgress();
+        this.processQueue();
+    },
 
-                const formData = new FormData();
-                formData.append('file', file, file.name);
+    updateDockProgress() {
+        const dockTitle = document.getElementById('uploadDockTitle');
+        const dockProgress = document.getElementById('dockProgressBar');
+        const pct = this.totalQueued > 0 ? Math.round((this.completedCount / this.totalQueued) * 100) : 0;
+        if (dockProgress) dockProgress.style.width = `${pct}%`;
+        if (dockTitle) dockTitle.textContent = `Uploaded ${this.completedCount}/${this.totalQueued} files (${pct}%)`;
+    },
 
-                try {
-                    const res = await fetch(`/image/${encodeURIComponent(file.name)}`, {
-                        method: 'PUT',
-                        body: formData,
-                    });
+    async processQueue() {
+        if (this.isProcessing) return;
+        this.isProcessing = true;
 
-                    if (res.ok) {
-                        successCount++;
-                        if (statusEl) {
-                            statusEl.textContent = '✓ Done';
-                            statusEl.className = 'dock-item-status success';
-                        }
-                    } else {
-                        if (statusEl) {
-                            statusEl.textContent = '✕ Failed';
-                            statusEl.className = 'dock-item-status error';
-                        }
-                    }
-                } catch {
-                    if (statusEl) {
-                        statusEl.textContent = '✕ Error';
-                        statusEl.className = 'dock-item-status error';
-                    }
-                }
-
-                completed++;
-                const pct = Math.round((completed / total) * 100);
-                dockProgress.style.width = `${pct}%`;
-                dockTitle.textContent = `Uploaded ${completed}/${total} files (${pct}%)`;
+        const workers = Array(this.CONCURRENCY).fill(0).map(async () => {
+            while (this.queue.length > 0) {
+                const item = this.queue.shift();
+                if (!item) break;
+                await this.uploadSingle(item.file, item.index);
             }
-        };
+        });
 
-        const workers = Array(Math.min(CONCURRENCY, total)).fill(0).map(() => uploadWorker());
         await Promise.all(workers);
+        this.isProcessing = false;
 
-        Toast.show(`Uploaded ${successCount} of ${total} file(s) successfully!`, 'success');
+        Toast.show(`Uploaded ${this.successCount} of ${this.totalQueued} file(s) successfully!`, 'success');
         fetchMediaList();
 
         setTimeout(() => {
-            if (completed === total) {
-                dock.style.display = 'none';
+            if (!this.isProcessing && this.completedCount === this.totalQueued) {
+                const dock = document.getElementById('uploadDock');
+                if (dock) dock.style.display = 'none';
             }
         }, 5000);
+    },
+
+    async uploadSingle(file, index) {
+        const statusEl = document.getElementById(`dock-status-${index}`);
+        if (statusEl) statusEl.textContent = 'Uploading...';
+
+        const formData = new FormData();
+        formData.append('file', file, file.name);
+
+        try {
+            const res = await fetch(`/image/${encodeURIComponent(file.name)}`, {
+                method: 'PUT',
+                body: formData,
+            });
+
+            if (res.status === 200) {
+                this.successCount++;
+                if (statusEl) {
+                    statusEl.textContent = '✓ Exists';
+                    statusEl.className = 'dock-item-status duplicate';
+                }
+            } else if (res.ok) {
+                this.successCount++;
+                if (statusEl) {
+                    statusEl.textContent = '✓ Done';
+                    statusEl.className = 'dock-item-status success';
+                }
+            } else {
+                if (statusEl) {
+                    statusEl.textContent = '✕ Failed';
+                    statusEl.className = 'dock-item-status error';
+                }
+            }
+        } catch {
+            if (statusEl) {
+                statusEl.textContent = '✕ Error';
+                statusEl.className = 'dock-item-status error';
+            }
+        }
+
+        this.completedCount++;
+        this.updateDockProgress();
     }
 };
 
@@ -820,6 +1014,17 @@ const SettingsModal = {
 
         if (!btn || !overlay || !form) return;
 
+        const closeModal = () => {
+            overlay.style.display = 'none';
+        };
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) closeModal();
+        });
+
+        cancelBtn?.addEventListener('click', closeModal);
+        modalCancelBtn?.addEventListener('click', closeModal);
+
         btn.addEventListener('click', async () => {
             try {
                 const res = await fetch('/api/settings');
@@ -829,8 +1034,8 @@ const SettingsModal = {
                     document.getElementById('taggingModel').value = data.tagging_model;
                     document.getElementById('archivalBackend').value = data.archival_backend;
                     document.getElementById('archivalBucket').value = data.archival_bucket;
-                    errorBox.style.display = 'none';
-                    successBox.style.display = 'none';
+                    if (errorBox) errorBox.style.display = 'none';
+                    if (successBox) successBox.style.display = 'none';
                     overlay.style.display = 'flex';
                 }
             } catch {
@@ -838,18 +1043,17 @@ const SettingsModal = {
             }
         });
 
-        const closeModal = () => {
-            overlay.style.display = 'none';
-        };
-
-        cancelBtn?.addEventListener('click', closeModal);
-        modalCancelBtn?.addEventListener('click', closeModal);
-
         testBtn?.addEventListener('click', async () => {
             testBtn.textContent = 'Testing...';
             testBtn.disabled = true;
             try {
-                const res = await fetch('/api/archival/test', { method: 'POST' });
+                const backend = document.getElementById('archivalBackend')?.value || 'Off';
+                const bucket = document.getElementById('archivalBucket')?.value || '';
+                const res = await fetch('/api/archival/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ archival_backend: backend, archival_bucket: bucket })
+                });
                 const data = await res.json();
                 if (data.connected) {
                     Toast.show(data.message || 'Archival test passed!', 'success');
@@ -866,12 +1070,21 @@ const SettingsModal = {
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const formData = new FormData(form);
+            const rawInterval = document.getElementById('rescanInterval')?.value;
+            const rescanInterval = rawInterval === '' ? 0 : parseInt(rawInterval, 10);
+            if (isNaN(rescanInterval) || rescanInterval < 0) {
+                if (errorBox) {
+                    errorBox.textContent = 'Rescan interval must be a non-negative number.';
+                    errorBox.style.display = 'block';
+                }
+                return;
+            }
+
             const payload = {
-                rescan_interval: parseInt(formData.get('rescan_interval'), 10),
-                tagging_model: formData.get('tagging_model'),
-                archival_backend: formData.get('archival_backend'),
-                archival_bucket: formData.get('archival_bucket') || '',
+                rescan_interval: rescanInterval,
+                tagging_model: document.getElementById('taggingModel')?.value || 'Off',
+                archival_backend: document.getElementById('archivalBackend')?.value || 'Off',
+                archival_bucket: document.getElementById('archivalBucket')?.value?.trim() || '',
             };
 
             try {
@@ -886,12 +1099,16 @@ const SettingsModal = {
                     closeModal();
                 } else {
                     const err = await res.json();
-                    errorBox.textContent = err.error || 'Failed to save settings.';
-                    errorBox.style.display = 'block';
+                    if (errorBox) {
+                        errorBox.textContent = err.error || 'Failed to save settings.';
+                        errorBox.style.display = 'block';
+                    }
                 }
             } catch (err) {
-                errorBox.textContent = err.message;
-                errorBox.style.display = 'block';
+                if (errorBox) {
+                    errorBox.textContent = err.message;
+                    errorBox.style.display = 'block';
+                }
             }
         });
     }
@@ -939,48 +1156,90 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Keyboard Shortcut ('/' to focus search, 'Esc' to clear)
+    // Keyboard Shortcuts ('/' to focus search, 'Esc' to clear/close modals)
     window.addEventListener('keydown', (e) => {
-        if (e.key === '/' && document.activeElement !== searchInput) {
+        const active = document.activeElement;
+        const isInputFocused = active && (['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) || active.isContentEditable);
+
+        if (e.key === '/' && !isInputFocused) {
             e.preventDefault();
             searchInput?.focus();
         } else if (e.key === 'Escape') {
-            if (searchInput && document.activeElement === searchInput) {
+            const settingsOverlay = document.getElementById('settingsOverlay');
+            if (settingsOverlay && settingsOverlay.style.display === 'flex') {
+                settingsOverlay.style.display = 'none';
+            } else if (searchInput && active === searchInput) {
                 searchInput.blur();
                 searchInput.value = '';
-                resetBtn.style.display = 'none';
+                if (resetBtn) resetBtn.style.display = 'none';
                 AppState.searchQuery = '';
                 applyFilters();
             }
         }
     });
 
-    // Manual Rescan Trigger Button
-    document.getElementById('rescanButton')?.addEventListener('click', async () => {
-        try {
-            const res = await fetch('/api/scan', { method: 'POST' });
-            if (res.ok) {
-                Toast.show('Rescan triggered! Refreshing...', 'info');
-                setTimeout(() => fetchMediaList(), 1500);
-            }
-        } catch {
-            Toast.show('Failed to trigger rescan.', 'error');
-        }
-    });
+    // Manual Rescan Trigger Button with Polling
+    const rescanBtn = document.getElementById('rescanButton');
+    if (rescanBtn) {
+        rescanBtn.addEventListener('click', async () => {
+            rescanBtn.disabled = true;
+            rescanBtn.style.opacity = '0.5';
+            Toast.show('Starting library rescan...', 'info');
 
-    // Mobile Sidebar Drawer Toggle
+            try {
+                const res = await fetch('/api/scan', { method: 'POST' });
+                if (!res.ok) throw new Error('Rescan request failed');
+
+                const pollRescan = async () => {
+                    try {
+                        const statusRes = await fetch('/api/scan/status', { cache: 'no-store' });
+                        if (statusRes.ok) {
+                            const status = await statusRes.json();
+                            if (status.is_scanning) {
+                                setTimeout(pollRescan, 500);
+                                return;
+                            }
+                        }
+                    } catch {}
+
+                    rescanBtn.disabled = false;
+                    rescanBtn.style.opacity = '1';
+                    Toast.show('Rescan complete! Updating library...', 'success');
+                    fetchMediaList();
+                };
+
+                setTimeout(pollRescan, 500);
+            } catch {
+                rescanBtn.disabled = false;
+                rescanBtn.style.opacity = '1';
+                Toast.show('Failed to trigger rescan.', 'error');
+            }
+        });
+    }
+
+    // Mobile Sidebar Drawer Toggle & Backdrop
     const sidebarToggle = document.getElementById('sidebarToggleButton');
     const closeDrawer = document.getElementById('closeDrawerButton');
     const sidebar = document.getElementById('navigation-sidebar');
+    const backdrop = document.getElementById('drawerBackdrop');
 
-    sidebarToggle?.addEventListener('click', () => {
-        sidebar?.classList.toggle('expanded');
-    });
+    const openDrawer = () => {
+        sidebar?.classList.add('expanded');
+        backdrop?.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    };
 
-    closeDrawer?.addEventListener('click', () => {
+    const closeDrawerFn = () => {
         sidebar?.classList.remove('expanded');
-    });
+        backdrop?.classList.remove('active');
+        document.body.style.overflow = '';
+    };
 
-    // Initial Load
+    sidebarToggle?.addEventListener('click', openDrawer);
+    closeDrawer?.addEventListener('click', closeDrawerFn);
+    backdrop?.addEventListener('click', closeDrawerFn);
+
+    // Initial Lightbox & Media Load
+    initPhotoSwipe();
     fetchMediaList();
 });

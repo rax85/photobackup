@@ -2,7 +2,7 @@
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>PhotoBackup · Scanning Library</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -305,16 +305,18 @@
             </div>
 
             <div class="error-notice" id="errorNotice"></div>
-            <button id="continueBtn" class="button button-primary continue-btn" onclick="window.location.replace('/')">Continue to Gallery</button>
+            <button id="continueBtn" class="button button-primary continue-btn">Continue to Gallery</button>
         </div>
     </div>
 
     <script>
         // Apply saved theme
         (function initTheme() {
-            const savedTheme = localStorage.getItem('photobackup_theme');
-            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            document.documentElement.dataset.theme = savedTheme || (prefersDark ? 'dark' : 'light');
+            try {
+                const savedTheme = localStorage.getItem('photobackup_theme');
+                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                document.documentElement.dataset.theme = savedTheme || (prefersDark ? 'dark' : 'light');
+            } catch {}
         })();
 
         const scanTitle = document.getElementById('scanTitle');
@@ -329,6 +331,10 @@
         const errorNotice = document.getElementById('errorNotice');
         const continueBtn = document.getElementById('continueBtn');
 
+        continueBtn.addEventListener('click', () => {
+            window.location.replace('/');
+        });
+
         let isRedirecting = false;
         let pollTimer = null;
         let failureCount = 0;
@@ -339,6 +345,8 @@
                 case 'processing': return 'Indexing';
                 case 'finalizing': return 'Finalizing';
                 case 'complete': return 'Complete';
+                case 'idle': return 'Idle';
+                case 'error': return 'Failed';
                 default: return 'Scanning';
             }
         }
@@ -370,31 +378,40 @@
                     scanMessage.textContent = data.message;
                 }
 
+                // Check for fatal errors first
+                if (data.error || phase === 'error') {
+                    if (pollTimer) clearTimeout(pollTimer);
+                    errorNotice.textContent = `Scan failed: ${data.error || 'Internal scanner error'}`;
+                    errorNotice.style.display = 'block';
+                    continueBtn.style.display = 'block';
+                    scanningFooter.style.display = 'none';
+                    return;
+                }
+
                 // Check if initial scan is complete
                 if (!data.initial_scan_in_progress && data.initial_scan_completed) {
                     onScanComplete();
                     return;
                 }
 
-                if (data.error) {
-                    errorNotice.textContent = `Warning: ${data.error}`;
-                    errorNotice.style.display = 'block';
-                    continueBtn.style.display = 'block';
-                }
+                // Schedule next poll sequentially
+                pollTimer = setTimeout(checkScanStatus, 400);
             } catch (err) {
                 failureCount++;
-                if (failureCount > 10) {
+                const delay = Math.min(5000, 500 * Math.pow(1.5, failureCount));
+                if (failureCount > 5) {
                     errorNotice.textContent = 'Unable to connect to server. Retrying...';
                     errorNotice.style.display = 'block';
                     continueBtn.style.display = 'block';
                 }
+                pollTimer = setTimeout(checkScanStatus, delay);
             }
         }
 
         function onScanComplete() {
             if (isRedirecting) return;
             isRedirecting = true;
-            if (pollTimer) clearInterval(pollTimer);
+            if (pollTimer) clearTimeout(pollTimer);
 
             progressFill.style.width = '100%';
             percentLabel.textContent = '100%';
@@ -410,9 +427,8 @@
             }, 600);
         }
 
-        // Start polling every 400ms
+        // Start polling
         checkScanStatus();
-        pollTimer = setInterval(checkScanStatus, 400);
     </script>
 </body>
 </html>

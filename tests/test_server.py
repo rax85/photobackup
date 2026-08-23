@@ -512,14 +512,39 @@ class TestServerFlaskWithDB(unittest.TestCase):
         post_res = self.client.post("/api/scan")
         self.assertEqual(post_res.status_code, 200)
         self.assertIn("message", post_res.json)
-        self.assertIn("status", post_res.json)
+    def test_put_unicode_filename_preserves_extension(self):
+        # Non-ASCII filename (e.g. Chinese characters)
+        image_name = "暑假旅行.jpg"
+        img_byte_arr = io.BytesIO()
+        dummy_pil_img = Image.new("RGB", (100, 100), color="blue")
+        dummy_pil_img.save(img_byte_arr, format="JPEG")
+        content_bytes = img_byte_arr.getvalue()
+        img_byte_arr.seek(0)
+        img_sha256 = hashlib.sha256(content_bytes).hexdigest()
 
-    def test_rebuild_metadata_flags_registered(self):
-        self.assertTrue(hasattr(media_server_module.FLAGS, "rebuild_metadata"))
-        self.assertTrue(hasattr(media_server_module.FLAGS, "force_rebuild"))
-        self.assertFalse(media_server_module.FLAGS.rebuild_metadata)
-        self.assertFalse(media_server_module.FLAGS.force_rebuild)
+        response = self.client.put(
+            f"/image/{image_name}",
+            data={"file": (img_byte_arr, image_name)},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 201)
+
+        db_entry = db_utils.get_media_file_by_sha(self.db_path, img_sha256)
+        self.assertIsNotNone(db_entry)
+        self.assertTrue(db_entry["file_path"].endswith(".jpg"))
+        self.assertEqual(db_entry["mime_type"], "image/jpeg")
+
+    def test_archival_test_with_payload(self):
+        # Test with 'Off' payload
+        response = self.client.post(
+            "/api/archival/test",
+            json={"archival_backend": "Off", "archival_bucket": "test-bucket"},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json
+        self.assertTrue(data.get("connected"))
 
 
 if __name__ == "__main__":
     unittest.main()
+

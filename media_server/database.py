@@ -343,7 +343,7 @@ def get_all_media_files(
     media_dict = {}
     try:
         cursor = conn.cursor()
-        query = "SELECT * FROM media_files ORDER BY original_creation_date DESC, filename ASC"
+        query = "SELECT * FROM media_files ORDER BY original_creation_date DESC NULLS LAST, filename ASC"
         params: List[Any] = []
         if limit is not None:
             query += " LIMIT ?"

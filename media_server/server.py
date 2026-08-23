@@ -515,7 +515,18 @@ def put_image(filename):
             200,
         )
 
-    base, ext = os.path.splitext(s_filename)
+    orig_stem, orig_ext = os.path.splitext(original_client_filename or filename)
+    orig_ext = orig_ext.lower()
+
+    s_filename = secure_filename(filename)
+    if not s_filename:
+        s_filename = secure_filename(original_client_filename)
+
+    base, ext = os.path.splitext(s_filename) if s_filename else ("", "")
+    if not ext and orig_ext:
+        ext = orig_ext
+    if not base or base == ext.lstrip("."):
+        base = f"upload_{sha256_hash[:8]}"
     ext = ext.lower()
     final_filename_on_disk = f"{base}{ext}"
     target_path = os.path.join(upload_dir_abs, final_filename_on_disk)
@@ -815,7 +826,25 @@ def put_settings():
 def test_archival_connection():
     """Tests cloud archival connectivity."""
     mgr = get_settings_mgr()
-    archival_mgr = archival_utils.ArchivalManager(mgr.get())
+    current_settings = mgr.get()
+    payload = request.get_json(silent=True)
+    if payload and isinstance(payload, dict):
+        try:
+            from media_server.settings import Settings
+            test_backend = payload.get("archival_backend", current_settings.archival_backend)
+            test_bucket = payload.get("archival_bucket", current_settings.archival_bucket)
+            test_settings = Settings(
+                rescan_interval=current_settings.rescan_interval,
+                tagging_model=current_settings.tagging_model,
+                archival_backend=test_backend,
+                archival_bucket=test_bucket,
+            )
+            archival_mgr = archival_utils.ArchivalManager(test_settings)
+            return jsonify(archival_mgr.test_status())
+        except Exception as e:
+            return jsonify({"connected": False, "message": str(e)})
+
+    archival_mgr = archival_utils.ArchivalManager(current_settings)
     return jsonify(archival_mgr.test_status())
 
 
