@@ -420,6 +420,75 @@ class TestServerFlaskWithDB(unittest.TestCase):
         self.assertEqual(data["total_count"], 2)
         self.assertTrue(data["has_more"])
 
+    def test_root_route_serves_scanning_when_scan_in_progress(self):
+        media_server_module.scan_status.update(
+            initial_scan_in_progress=True,
+            initial_scan_completed=False,
+            is_scanning=True,
+        )
+        try:
+            response = self.client.get("/")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b"Scanning Media Library", response.data)
+        finally:
+            media_server_module.scan_status.update(
+                initial_scan_in_progress=False,
+                initial_scan_completed=True,
+                is_scanning=False,
+            )
+
+    def test_root_route_serves_index_when_scan_complete(self):
+        media_server_module.scan_status.update(
+            initial_scan_in_progress=False,
+            initial_scan_completed=True,
+            is_scanning=False,
+        )
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"PhotoBackup", response.data)
+        self.assertIn(b"gallery-grid", response.data)
+
+    def test_api_scan_status(self):
+        media_server_module.scan_status.update(
+            is_scanning=True,
+            initial_scan_in_progress=True,
+            initial_scan_completed=False,
+            phase="processing",
+            message="Processing media 5/10",
+            current=5,
+            total=10,
+            percent=50.0,
+        )
+        try:
+            response = self.client.get("/api/scan/status")
+            self.assertEqual(response.status_code, 200)
+            data = response.json
+            self.assertTrue(data["is_scanning"])
+            self.assertTrue(data["initial_scan_in_progress"])
+            self.assertFalse(data["initial_scan_completed"])
+            self.assertEqual(data["phase"], "processing")
+            self.assertEqual(data["current"], 5)
+            self.assertEqual(data["total"], 10)
+            self.assertEqual(data["percent"], 50.0)
+        finally:
+            media_server_module.scan_status.update(
+                initial_scan_in_progress=False,
+                initial_scan_completed=True,
+                is_scanning=False,
+            )
+
+    def test_api_scan_post_and_get(self):
+        # Test GET /api/scan
+        get_res = self.client.get("/api/scan")
+        self.assertEqual(get_res.status_code, 200)
+        self.assertIn("is_scanning", get_res.json)
+
+        # Test POST /api/scan
+        post_res = self.client.post("/api/scan")
+        self.assertEqual(post_res.status_code, 200)
+        self.assertIn("message", post_res.json)
+        self.assertIn("status", post_res.json)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -562,6 +562,7 @@ def scan_directory(
     db_path: str,
     image_classifier: ImageClassifier,
     rescan: bool = False,
+    progress_callback: Optional[Any] = None,
 ) -> None:
     """
     Scans a storage directory, indexes media files, generates thumbnails,
@@ -570,6 +571,18 @@ def scan_directory(
     if not os.path.isdir(storage_dir):
         logging.error(f"Storage directory not found: {storage_dir}")
         return
+
+    if progress_callback:
+        try:
+            progress_callback({
+                "phase": "discovering",
+                "message": "Discovering media files in storage directory...",
+                "current": 0,
+                "total": 0,
+                "percent": 0.0,
+            })
+        except Exception:
+            pass
 
     thumbnail_dir_abs = os.path.join(storage_dir, THUMBNAIL_DIR_NAME)
     os.makedirs(thumbnail_dir_abs, exist_ok=True)
@@ -632,6 +645,24 @@ def scan_directory(
                 media_to_process.append((abs_path, disk_filename, db_entry))
                 processed_rel_paths.add(rel_path)
 
+    total = len(media_to_process)
+    if progress_callback:
+        try:
+            msg = (
+                f"Found {total} media item{'s' if total != 1 else ''} to index."
+                if total > 0
+                else "No new media items to process."
+            )
+            progress_callback({
+                "phase": "processing" if total > 0 else "finalizing",
+                "message": msg,
+                "current": 0,
+                "total": total,
+                "percent": 0.0 if total > 0 else 100.0,
+            })
+        except Exception:
+            pass
+
     def _process_item_task(item):
         try:
             abs_path, disk_filename, db_entry = item
@@ -669,6 +700,7 @@ def scan_directory(
     max_workers = min(32, max(4, (os.cpu_count() or 4) * 2))
     BATCH_SIZE = 500
     batch_buffer = []
+    processed_count = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(_process_item_task, item) for item in media_to_process]
         for future in concurrent.futures.as_completed(futures):
@@ -681,6 +713,20 @@ def scan_directory(
                         batch_buffer.clear()
             except Exception as exc:
                 logging.error(f"Task processing error: {exc}")
+
+            processed_count += 1
+            if progress_callback and total > 0:
+                try:
+                    pct = round((processed_count / total) * 100, 1)
+                    progress_callback({
+                        "phase": "processing",
+                        "message": f"Processing media items ({processed_count}/{total})...",
+                        "current": processed_count,
+                        "total": total,
+                        "percent": pct,
+                    })
+                except Exception:
+                    pass
 
     if batch_buffer:
         db_utils.batch_add_or_update_media_files(db_path, batch_buffer)
@@ -700,3 +746,15 @@ def scan_directory(
                     )
 
     _cleanup_orphaned_thumbnails(db_path, thumbnail_dir_abs)
+
+    if progress_callback:
+        try:
+            progress_callback({
+                "phase": "complete",
+                "message": "Media library scan complete.",
+                "current": total,
+                "total": total,
+                "percent": 100.0,
+            })
+        except Exception:
+            pass

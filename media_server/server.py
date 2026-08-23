@@ -66,6 +66,44 @@ _cached_classifier = None
 _cached_classifier_lock = threading.Lock()
 
 
+class ScanStatus:
+    """Thread-safe state container tracking library scanning progress."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.is_scanning = False
+        self.initial_scan_in_progress = False
+        self.initial_scan_completed = True
+        self.phase = "idle"  # "idle", "discovering", "processing", "finalizing", "complete"
+        self.message = "Idle"
+        self.current = 0
+        self.total = 0
+        self.percent = 0.0
+        self.error: Optional[str] = None
+
+    def update(self, **kwargs):
+        with self._lock:
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    def to_dict(self):
+        with self._lock:
+            return {
+                "is_scanning": self.is_scanning,
+                "initial_scan_in_progress": self.initial_scan_in_progress,
+                "initial_scan_completed": self.initial_scan_completed,
+                "phase": self.phase,
+                "message": self.message,
+                "current": self.current,
+                "total": self.total,
+                "percent": self.percent,
+                "error": self.error,
+            }
+
+
+scan_status = ScanStatus()
+
+
 def get_image_classifier(settings: settings_utils.Settings) -> ImageClassifier:
     """Returns a cached ImageClassifier instance, reloading only when model changes."""
     global _cached_classifier
@@ -132,49 +170,124 @@ def close_db(error):
 
 # --- Background Scanner ---
 def background_scanner_task(app_context):
-    """Background worker that periodically rescans storage directory."""
+    """Background worker that performs initial scan and periodically rescans storage directory."""
     with app_context:
         storage_dir = app.config.get("STORAGE_DIR")
         db_path = app.config.get("DATABASE_PATH")
         if not storage_dir or not db_path:
             logging.error("Background scanner cannot start: missing config.")
+            scan_status.update(
+                is_scanning=False,
+                initial_scan_in_progress=False,
+                initial_scan_completed=True,
+                phase="idle",
+                message="Missing storage directory or database configuration.",
+            )
             return
 
-        logging.info(f"Background scanner started for dir: {storage_dir}")
+        def progress_cb(info):
+            scan_status.update(
+                phase=info.get("phase", scan_status.phase),
+                message=info.get("message", scan_status.message),
+                current=info.get("current", scan_status.current),
+                total=info.get("total", scan_status.total),
+                percent=info.get("percent", scan_status.percent),
+            )
+
+        # 1. Initial Scan execution (if requested)
+        if scan_status.initial_scan_in_progress:
+            logging.info(f"Background scanner running initial scan for dir: {storage_dir}")
+            try:
+                mgr = get_settings_mgr()
+                settings = mgr.get()
+                image_classifier = get_image_classifier(settings)
+                media_scanner.scan_directory(
+                    storage_dir,
+                    db_path,
+                    image_classifier,
+                    rescan=False,
+                    progress_callback=progress_cb,
+                )
+                logging.info("Initial scan complete.")
+            except Exception as e:
+                logging.error(f"Error during initial scan: {e}", exc_info=True)
+                scan_status.update(error=str(e))
+            finally:
+                db_utils.close_db_connection()
+                has_err = bool(scan_status.error)
+                scan_status.update(
+                    is_scanning=False,
+                    initial_scan_in_progress=False,
+                    initial_scan_completed=True,
+                    phase="error" if has_err else "complete",
+                    message=f"Initial scan encountered error: {scan_status.error}" if has_err else "Initial scan complete.",
+                    percent=100.0,
+                )
+
+        # 2. Periodic rescan loop
+        logging.info(f"Background scanner ready for periodic rescans: {storage_dir}")
         while True:
             mgr = get_settings_mgr()
             settings = mgr.get()
-            image_classifier = get_image_classifier(settings)
             rescan_interval = settings.rescan_interval
 
             if rescan_interval <= 0:
                 logging.info("Rescanning disabled, sleeping until settings update.")
                 scanner_wakeup_event.wait()
                 scanner_wakeup_event.clear()
-                continue
+            else:
+                woken = scanner_wakeup_event.wait(timeout=rescan_interval)
+                if woken:
+                    scanner_wakeup_event.clear()
 
             try:
                 logging.info("Background scanner performing rescan...")
+                scan_status.update(
+                    is_scanning=True,
+                    phase="discovering",
+                    message="Scanning for library changes...",
+                    current=0,
+                    total=0,
+                    percent=0.0,
+                    error=None,
+                )
+                settings = mgr.get()
+                image_classifier = get_image_classifier(settings)
                 media_scanner.scan_directory(
-                    storage_dir, db_path, image_classifier, rescan=True
+                    storage_dir,
+                    db_path,
+                    image_classifier,
+                    rescan=True,
+                    progress_callback=progress_cb,
                 )
                 logging.info("Background rescan complete.")
             except Exception as e:
                 logging.error(f"Error during background scan: {e}", exc_info=True)
+                scan_status.update(error=str(e))
             finally:
                 db_utils.close_db_connection()
-
-            current_interval = get_settings_mgr().get().rescan_interval
-            if current_interval > 0:
-                scanner_wakeup_event.wait(timeout=current_interval)
-                scanner_wakeup_event.clear()
+                has_err = bool(scan_status.error)
+                scan_status.update(
+                    is_scanning=False,
+                    phase="error" if has_err else "complete",
+                    message=f"Rescan encountered error: {scan_status.error}" if has_err else "Rescan complete.",
+                    percent=100.0,
+                )
 
 
 # --- API Routes ---
 @app.route("/")
 def root():
-    """Serves the frontend SPA."""
+    """Serves the frontend SPA, or the scanning progress page if initial scan is active."""
+    if scan_status.initial_scan_in_progress:
+        return app.send_static_file("scanning.html")
     return app.send_static_file("index.html")
+
+
+@app.route("/scanning")
+def scanning_page():
+    """Serves the scanning progress page."""
+    return app.send_static_file("scanning.html")
 
 
 @app.route("/list", methods=["GET"])
@@ -287,11 +400,19 @@ def api_stats():
     return jsonify(stats)
 
 
-@app.route("/api/scan", methods=["POST"])
+@app.route("/api/scan/status", methods=["GET"])
+def api_scan_status():
+    """Returns current scan progress and status."""
+    return jsonify(scan_status.to_dict())
+
+
+@app.route("/api/scan", methods=["GET", "POST"])
 def api_trigger_scan():
-    """Triggers an immediate background rescan."""
-    scanner_wakeup_event.set()
-    return jsonify({"message": "Rescan triggered successfully."})
+    """Triggers an immediate background rescan (POST) or returns scan status (GET)."""
+    if request.method == "POST":
+        scanner_wakeup_event.set()
+        return jsonify({"message": "Rescan triggered successfully.", "status": scan_status.to_dict()})
+    return jsonify(scan_status.to_dict())
 
 
 ALLOWED_EXTENSIONS = {
@@ -654,7 +775,10 @@ def put_settings():
         new_settings = settings_utils.Settings(**request.json)
         mgr.write_settings(new_settings)
 
-        if current_settings.rescan_interval <= 0 and new_settings.rescan_interval > 0:
+        if (
+            current_settings.rescan_interval != new_settings.rescan_interval
+            or current_settings.tagging_model != new_settings.tagging_model
+        ):
             scanner_wakeup_event.set()
 
         return jsonify(new_settings.to_dict())
@@ -698,19 +822,20 @@ def run_flask_app(argv):
     db_utils.init_db(storage_dir)
     db_utils.close_db_connection()
 
-    # Initial media scan
-    try:
-        settings = settings_manager.get()
-        image_classifier = ImageClassifier(settings)
-        media_scanner.scan_directory(
-            storage_dir, app.config["DATABASE_PATH"], image_classifier, rescan=False
-        )
-    except Exception as e:
-        logging.error(f"Error during initial scan: {e}")
-    finally:
-        db_utils.close_db_connection()
+    # Mark initial scan as active so that visiting users see the progress page
+    scan_status.update(
+        is_scanning=True,
+        initial_scan_in_progress=True,
+        initial_scan_completed=False,
+        phase="discovering",
+        message="Discovering media files for initial scan...",
+        current=0,
+        total=0,
+        percent=0.0,
+        error=None,
+    )
 
-    # Background scanner thread
+    # Background scanner thread (handles initial scan and periodic rescans)
     scanner_thread = threading.Thread(
         target=background_scanner_task,
         args=(app.app_context(),),
@@ -718,7 +843,7 @@ def run_flask_app(argv):
     )
     scanner_thread.start()
 
-    logging.info(f"Starting PhotoBackup server on port {FLAGS.port}...")
+    logging.info(f"Starting PhotoBackup server immediately on port {FLAGS.port}...")
     app.run(host="0.0.0.0", port=FLAGS.port, debug=False, use_reloader=False)
 
 

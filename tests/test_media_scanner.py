@@ -544,6 +544,30 @@ class TestMediaScannerWithDB(unittest.TestCase):
             self.assertEqual(db_entry["tags"], '[["tag2", 0.8]]')
             mock_classifier_instance.classify_image.assert_not_called()
 
+    def test_scan_directory_with_progress_callback(self):
+        reports = []
+
+        def callback(info):
+            reports.append(info)
+
+        with mock.patch("media_server.image_classifier.ImageClassifier") as MockClassifier:
+            mock_classifier = MockClassifier.return_value
+            mock_classifier.settings.tagging_model = "Off"
+            media_scanner.scan_directory(
+                self.test_dir,
+                self.db_path,
+                mock_classifier,
+                rescan=False,
+                progress_callback=callback,
+            )
+
+        self.assertTrue(len(reports) >= 2)
+        # Check discovering phase
+        self.assertEqual(reports[0]["phase"], "discovering")
+        # Check complete phase at end
+        self.assertEqual(reports[-1]["phase"], "complete")
+        self.assertEqual(reports[-1]["percent"], 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()
