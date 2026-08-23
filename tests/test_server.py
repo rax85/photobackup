@@ -489,6 +489,12 @@ class TestServerFlaskWithDB(unittest.TestCase):
         self.assertIn("message", post_res.json)
         self.assertIn("status", post_res.json)
 
+    def test_rebuild_metadata_flags_registered(self):
+        self.assertTrue(hasattr(media_server_module.FLAGS, "rebuild_metadata"))
+        self.assertTrue(hasattr(media_server_module.FLAGS, "force_rebuild"))
+        self.assertFalse(media_server_module.FLAGS.rebuild_metadata)
+        self.assertFalse(media_server_module.FLAGS.force_rebuild)
+
 
 if __name__ == "__main__":
     unittest.main()

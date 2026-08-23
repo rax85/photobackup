@@ -568,6 +568,68 @@ class TestMediaScannerWithDB(unittest.TestCase):
         self.assertEqual(reports[-1]["phase"], "complete")
         self.assertEqual(reports[-1]["percent"], 100.0)
 
+    def test_generate_thumbnail_force(self):
+        # 1. Generate thumbnail initially
+        thumb_rel = media_scanner.generate_thumbnail(
+            self.file_img1, self.thumbnail_dir_path, self.hash_img1
+        )
+        self.assertIsNotNone(thumb_rel)
+        thumb_abs = os.path.join(self.thumbnail_dir_path, thumb_rel)
+        self.assertTrue(os.path.exists(thumb_abs))
+
+        # 2. Re-generating without force returns existing path without rewriting
+        thumb_rel2 = media_scanner.generate_thumbnail(
+            self.file_img1, self.thumbnail_dir_path, self.hash_img1, force=False
+        )
+        self.assertEqual(thumb_rel, thumb_rel2)
+
+        # 3. Generating with force=True re-writes the thumbnail
+        thumb_rel3 = media_scanner.generate_thumbnail(
+            self.file_img1, self.thumbnail_dir_path, self.hash_img1, force=True
+        )
+        self.assertEqual(thumb_rel, thumb_rel3)
+        self.assertTrue(os.path.exists(thumb_abs))
+
+    def test_scan_directory_force_rebuild(self):
+        # 1. Initial scan
+        with mock.patch("media_server.image_classifier.ImageClassifier") as MockClassifier:
+            mock_classifier = MockClassifier.return_value
+            mock_classifier.settings.tagging_model = "Off"
+            media_scanner.scan_directory(
+                self.test_dir,
+                self.db_path,
+                mock_classifier,
+                rescan=False,
+            )
+
+        db_entry = db_utils.get_media_file_by_sha(self.db_path, self.hash_img1)
+        self.assertIsNotNone(db_entry)
+        db_entry["tags"] = '[["old_tag", 0.5]]'
+        db_entry["width"] = 9999
+        db_utils.add_or_update_media_file(self.db_path, db_entry)
+
+        # 2. Run scan_directory with force_rebuild=True and active model
+        with mock.patch("media_server.image_classifier.ImageClassifier") as MockClassifier:
+            mock_classifier = MockClassifier.return_value
+            mock_classifier.settings.tagging_model = "Mobilenet"
+            mock_classifier.classify_image.return_value = [("rebuilt_tag", 0.95)]
+            media_scanner.scan_directory(
+                self.test_dir,
+                self.db_path,
+                mock_classifier,
+                rescan=False,
+                force_rebuild=True,
+            )
+
+            # Verify classify_image was called
+            self.assertTrue(mock_classifier.classify_image.called)
+
+        # 3. Verify metadata was rebuilt
+        rebuilt_entry = db_utils.get_media_file_by_sha(self.db_path, self.hash_img1)
+        self.assertIsNotNone(rebuilt_entry)
+        self.assertEqual(rebuilt_entry["tags"], '[["rebuilt_tag", 0.95]]')
+        self.assertEqual(rebuilt_entry["width"], 600)  # Re-extracted from image1.jpg (600, 400)
+
 
 if __name__ == "__main__":
     unittest.main()

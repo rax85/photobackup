@@ -49,6 +49,16 @@ try:
     flags.DEFINE_string(
         "db_name", db_utils.DATABASE_NAME, "Name of the SQLite database file."
     )
+    flags.DEFINE_boolean(
+        "rebuild_metadata",
+        False,
+        "Force a complete rebuild of all metadata and thumbnails as if it were a first run.",
+    )
+    flags.DEFINE_boolean(
+        "force_rebuild",
+        False,
+        "Alias for --rebuild_metadata.",
+    )
     if __name__ == "__main__":
         flags.mark_flag_as_required("storage_dir")
 except flags.Error:
@@ -194,9 +204,14 @@ def background_scanner_task(app_context):
                 percent=info.get("percent", scan_status.percent),
             )
 
+        force_rebuild = bool(app.config.get("FORCE_REBUILD", False))
+
         # 1. Initial Scan execution (if requested)
         if scan_status.initial_scan_in_progress:
-            logging.info(f"Background scanner running initial scan for dir: {storage_dir}")
+            logging.info(
+                f"Background scanner running initial scan for dir: {storage_dir} "
+                f"(force_rebuild={force_rebuild})"
+            )
             try:
                 mgr = get_settings_mgr()
                 settings = mgr.get()
@@ -205,8 +220,9 @@ def background_scanner_task(app_context):
                     storage_dir,
                     db_path,
                     image_classifier,
-                    rescan=False,
+                    rescan=force_rebuild,
                     progress_callback=progress_cb,
+                    force_rebuild=force_rebuild,
                 )
                 logging.info("Initial scan complete.")
             except Exception as e:
@@ -215,12 +231,17 @@ def background_scanner_task(app_context):
             finally:
                 db_utils.close_db_connection()
                 has_err = bool(scan_status.error)
+                init_complete_msg = (
+                    f"Initial scan encountered error: {scan_status.error}"
+                    if has_err
+                    else "Initial scan complete."
+                )
                 scan_status.update(
                     is_scanning=False,
                     initial_scan_in_progress=False,
                     initial_scan_completed=True,
                     phase="error" if has_err else "complete",
-                    message=f"Initial scan encountered error: {scan_status.error}" if has_err else "Initial scan complete.",
+                    message=init_complete_msg,
                     percent=100.0,
                 )
 
@@ -822,13 +843,25 @@ def run_flask_app(argv):
     db_utils.init_db(storage_dir)
     db_utils.close_db_connection()
 
+    rebuild = bool(
+        getattr(FLAGS, "rebuild_metadata", False)
+        or getattr(FLAGS, "force_rebuild", False)
+    )
+    app.config["FORCE_REBUILD"] = rebuild
+
+    initial_msg = (
+        "Rebuilding all media metadata and thumbnails from scratch..."
+        if rebuild
+        else "Discovering media files for initial scan..."
+    )
+
     # Mark initial scan as active so that visiting users see the progress page
     scan_status.update(
         is_scanning=True,
         initial_scan_in_progress=True,
         initial_scan_completed=False,
         phase="discovering",
-        message="Discovering media files for initial scan...",
+        message=initial_msg,
         current=0,
         total=0,
         percent=0.0,

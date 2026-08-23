@@ -302,6 +302,7 @@ def generate_thumbnail(
     thumbnail_dir: str,
     sha256_hex: str,
     target_size: Tuple[int, int] = THUMBNAIL_SIZE,
+    force: bool = False,
 ) -> Optional[str]:
     """
     Generates a proportional 256x256 PNG thumbnail for an image or video.
@@ -311,6 +312,7 @@ def generate_thumbnail(
         thumbnail_dir: Absolute path to .thumbnails directory.
         sha256_hex: SHA256 content hash.
         target_size: Target (width, height) tuple.
+        force: If True, forces regeneration of existing thumbnail.
 
     Returns:
         Relative path (e.g. 'ab/hash.png') or None on failure.
@@ -326,7 +328,7 @@ def generate_thumbnail(
     thumb_path_abs = os.path.join(subdir_abs, thumb_filename)
     thumb_rel_path = os.path.join(prefix, thumb_filename)
 
-    if os.path.exists(thumb_path_abs):
+    if not force and os.path.exists(thumb_path_abs):
         return thumb_rel_path
 
     mime_type, _ = mimetypes.guess_type(source_media_path)
@@ -406,6 +408,7 @@ def _process_single_file(
     image_classifier: ImageClassifier,
     disk_filename: str,
     existing_db_entry_for_path: Optional[Dict[str, Any]] = None,
+    force_rebuild: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Processes a single file and extracts its complete metadata."""
     rel_file_path = os.path.relpath(abs_file_path, abs_storage_dir)
@@ -422,7 +425,9 @@ def _process_single_file(
             mime_type = "video/mp4"
 
     filesize = os.path.getsize(abs_file_path)
-    existing_entry_for_sha = db_utils.get_media_file_by_sha(db_path, sha256_hex)
+    existing_entry_for_sha = (
+        None if force_rebuild else db_utils.get_media_file_by_sha(db_path, sha256_hex)
+    )
 
     tags = None
     if mime_type and mime_type.startswith("image/"):
@@ -433,7 +438,7 @@ def _process_single_file(
         )
         if (
             image_classifier.settings.tagging_model != "Off"
-            and image_classifier.settings.tagging_model != tagging_model_in_db
+            and (force_rebuild or image_classifier.settings.tagging_model != tagging_model_in_db)
         ):
             tags = image_classifier.classify_image(abs_file_path)
         elif existing_entry_for_sha and existing_entry_for_sha.get("tags"):
@@ -563,10 +568,19 @@ def scan_directory(
     image_classifier: ImageClassifier,
     rescan: bool = False,
     progress_callback: Optional[Any] = None,
+    force_rebuild: bool = False,
 ) -> None:
     """
     Scans a storage directory, indexes media files, generates thumbnails,
     and cleans up deleted files.
+
+    Args:
+        storage_dir: Directory containing media files.
+        db_path: SQLite database file path.
+        image_classifier: Image classifier instance.
+        rescan: If True, performs incremental synchronization.
+        progress_callback: Optional callback for streaming scan progress.
+        force_rebuild: If True, rebuilds all metadata and thumbnails from scratch.
     """
     if not os.path.isdir(storage_dir):
         logging.error(f"Storage directory not found: {storage_dir}")
@@ -576,7 +590,11 @@ def scan_directory(
         try:
             progress_callback({
                 "phase": "discovering",
-                "message": "Discovering media files in storage directory...",
+                "message": (
+                    "Rebuilding media library metadata from scratch..."
+                    if force_rebuild
+                    else "Discovering media files in storage directory..."
+                ),
                 "current": 0,
                 "total": 0,
                 "percent": 0.0,
@@ -605,7 +623,7 @@ def scan_directory(
         if entry.get("file_path")
     }
 
-    if rescan:
+    if rescan and not force_rebuild:
         for sha256_hex, db_entry in existing_db_entries.items():
             rel_path = db_entry.get("file_path")
             if not rel_path:
@@ -638,12 +656,13 @@ def scan_directory(
         for disk_filename in files:
             abs_path = os.path.normpath(os.path.join(root, disk_filename))
             rel_path = os.path.relpath(abs_path, abs_storage_dir)
-            if rel_path in processed_rel_paths and rescan:
+            if not force_rebuild and rel_path in processed_rel_paths and rescan:
                 continue
             if is_media_file(abs_path):
                 db_entry = existing_by_path.get(rel_path)
-                media_to_process.append((abs_path, disk_filename, db_entry))
-                processed_rel_paths.add(rel_path)
+                if force_rebuild or rel_path not in processed_rel_paths:
+                    media_to_process.append((abs_path, disk_filename, db_entry))
+                    processed_rel_paths.add(rel_path)
 
     total = len(media_to_process)
     if progress_callback:
@@ -679,13 +698,14 @@ def scan_directory(
                 image_classifier,
                 disk_filename,
                 db_entry,
+                force_rebuild=force_rebuild,
             )
             if not data:
                 return None
             if data.get("_thumbnail_needed"):
                 try:
                     thumb_path = generate_thumbnail(
-                        abs_path, thumbnail_dir_abs, sha
+                        abs_path, thumbnail_dir_abs, sha, force=force_rebuild
                     )
                     if thumb_path:
                         data["thumbnail_file"] = thumb_path
@@ -732,7 +752,7 @@ def scan_directory(
         db_utils.batch_add_or_update_media_files(db_path, batch_buffer)
         batch_buffer.clear()
 
-    if rescan:
+    if rescan or force_rebuild:
         all_db_paths = db_utils.get_all_db_file_paths(db_path)
         for db_rel_path in all_db_paths:
             if db_rel_path not in processed_rel_paths:

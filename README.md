@@ -57,6 +57,7 @@ python media_server/server.py --storage_dir=/path/to/your/media --port=8000
 * `--storage_dir`: (Required) Path to directory containing photos and videos.
 * `--port`: (Optional) Port number for server (default `8000`).
 * `--db_name`: (Optional) SQLite cache filename inside storage directory (default `media_cache.sqlite3`).
+* `--rebuild_metadata`: (Optional) Force a full rebuild of all metadata and thumbnails from scratch as if it were a first run (alias: `--force_rebuild`).
 
 Open `http://localhost:8000` in your web browser.
 
