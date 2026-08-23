@@ -874,6 +874,7 @@ def run_flask_app(argv):
     )
 
     db_utils.init_db(storage_dir)
+    existing_count = db_utils.get_total_media_count(app.config["DATABASE_PATH"])
     db_utils.close_db_connection()
 
     rebuild = bool(
@@ -882,26 +883,41 @@ def run_flask_app(argv):
     )
     app.config["FORCE_REBUILD"] = rebuild
 
-    initial_msg = (
-        "Rebuilding all media metadata and thumbnails from scratch..."
-        if rebuild
-        else "Discovering media files for initial scan..."
-    )
+    needs_initial_scan = rebuild or (existing_count == 0)
 
-    # Mark initial scan as active so that visiting users see the progress page
-    scan_status.update(
-        is_scanning=True,
-        initial_scan_in_progress=True,
-        initial_scan_completed=False,
-        phase="discovering",
-        message=initial_msg,
-        current=0,
-        total=0,
-        percent=0.0,
-        error=None,
-    )
+    if needs_initial_scan:
+        initial_msg = (
+            "Rebuilding all media metadata and thumbnails from scratch..."
+            if rebuild
+            else "Discovering media files for initial scan..."
+        )
+        # Mark initial scan as active so that visiting users see the progress page
+        scan_status.update(
+            is_scanning=True,
+            initial_scan_in_progress=True,
+            initial_scan_completed=False,
+            phase="discovering",
+            message=initial_msg,
+            current=0,
+            total=0,
+            percent=0.0,
+            error=None,
+        )
+    else:
+        # Library is already indexed: start immediately without blocking the UI
+        scan_status.update(
+            is_scanning=False,
+            initial_scan_in_progress=False,
+            initial_scan_completed=True,
+            phase="idle",
+            message=f"Library loaded with {existing_count} items.",
+            current=existing_count,
+            total=existing_count,
+            percent=100.0,
+            error=None,
+        )
 
-    # Background scanner thread (handles initial scan and periodic rescans)
+    # Background scanner thread (handles initial scan if needed and periodic rescans)
     scanner_thread = threading.Thread(
         target=background_scanner_task,
         args=(app.app_context(),),

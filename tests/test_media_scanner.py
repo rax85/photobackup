@@ -659,6 +659,161 @@ class TestMediaScannerWithDB(unittest.TestCase):
         self.assertEqual(entry["width"], 400)
         self.assertEqual(entry["height"], 600)
 
+    # --- Full EXIF Orientations 1-8 ---
+    def test_all_exif_orientations_width_height(self):
+        # Raw buffer: 400 wide x 200 high
+        # Orientations 5, 6, 7, 8 swap width and height -> expect 200 x 400
+        # Orientations 1, 2, 3, 4 preserve dimensions -> expect 400 x 200
+        expected_dims = {
+            1: (400, 200),
+            2: (400, 200),
+            3: (400, 200),
+            4: (400, 200),
+            5: (200, 400),
+            6: (200, 400),
+            7: (200, 400),
+            8: (200, 400),
+        }
+        for orientation, (expected_w, expected_h) in expected_dims.items():
+            fname = f"orient_{orientation}.jpg"
+            fpath = create_dummy_file(
+                self.test_dir,
+                fname,
+                image_details={"size": (400, 200), "format": "JPEG"},
+                orientation=orientation,
+            )
+            sha = media_scanner.get_file_sha256(fpath)
+            media_scanner.scan_directory(
+                self.test_dir, self.db_path, self.mock_image_classifier, rescan=True
+            )
+            entry = db_utils.get_media_file_by_sha(self.db_path, sha)
+            self.assertIsNotNone(entry, f"Failed for orientation {orientation}")
+            self.assertEqual(entry["width"], expected_w, f"Width mismatch for orient {orientation}")
+            self.assertEqual(entry["height"], expected_h, f"Height mismatch for orient {orientation}")
+
+    # --- Format Matrix: WebP, PNG, GIF ---
+    def test_image_formats_support(self):
+        formats = [
+            ("test.webp", "WEBP", (150, 100)),
+            ("test.png", "PNG", (120, 80)),
+            ("test.gif", "GIF", (90, 60)),
+        ]
+        for fname, fmt, size in formats:
+            fpath = create_dummy_file(
+                self.test_dir, fname, image_details={"size": size, "format": fmt}
+            )
+            sha = media_scanner.get_file_sha256(fpath)
+            media_scanner.scan_directory(
+                self.test_dir, self.db_path, self.mock_image_classifier, rescan=True
+            )
+            entry = db_utils.get_media_file_by_sha(self.db_path, sha)
+            self.assertIsNotNone(entry, f"Failed to index {fmt}")
+            self.assertEqual(entry["width"], size[0])
+            self.assertEqual(entry["height"], size[1])
+
+    # --- Video Binary Sniffing ---
+    def test_is_plausible_video_binary(self):
+        # 1. MP4 header
+        mp4_file = os.path.join(self.test_dir, "sample.mp4")
+        with open(mp4_file, "wb") as f:
+            f.write(b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00isomiso2mp41" + b"\x00" * 32)
+        self.assertTrue(media_scanner._is_plausible_video_binary(mp4_file))
+
+        # 2. AVI header
+        avi_file = os.path.join(self.test_dir, "sample.avi")
+        with open(avi_file, "wb") as f:
+            f.write(b"RIFF\x24\x00\x00\x00AVI LIST\x00\x00\x00\x00" + b"\x00" * 32)
+        self.assertTrue(media_scanner._is_plausible_video_binary(avi_file))
+
+        # 3. Matroska/WebM header
+        mkv_file = os.path.join(self.test_dir, "sample.mkv")
+        with open(mkv_file, "wb") as f:
+            f.write(b"\x1a\x45\xdf\xa3\x93\x42\x86\x81\x01\x42\xf7\x81\x01" + b"\x00" * 32)
+        self.assertTrue(media_scanner._is_plausible_video_binary(mkv_file))
+
+        # 4. Short / text file (<32 bytes)
+        short_file = os.path.join(self.test_dir, "short.mp4")
+        with open(short_file, "wb") as f:
+            f.write(b"too short")
+        self.assertFalse(media_scanner._is_plausible_video_binary(short_file))
+
+    # --- Video Frame Extraction and Letterboxing ---
+    def test_video_thumbnail_letterbox_aspect_ratio(self):
+        frame_img = Image.new("RGBA", (640, 360), (0, 128, 255, 255))
+        with mock.patch("media_server.media_scanner._extract_video_frame", return_value=frame_img):
+            mp4_file = os.path.join(self.test_dir, "test_wide.mp4")
+            with open(mp4_file, "wb") as f:
+                f.write(b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00isomiso2mp41" + b"\x00" * 32)
+            sha = hashlib.sha256(b"test_wide").hexdigest()
+            thumb_rel = media_scanner.generate_thumbnail(mp4_file, self.thumbnail_dir_path, sha)
+            self.assertIsNotNone(thumb_rel)
+            thumb_path = os.path.join(self.thumbnail_dir_path, thumb_rel)
+            with Image.open(thumb_path) as thumb:
+                self.assertEqual(thumb.size, (256, 256))
+                # Top border is black letterbox (0,0,0,255)
+                self.assertEqual(thumb.getpixel((128, 5)), (0, 0, 0, 255))
+
+    # --- File Rename Updates Database ---
+    def test_file_renamed_preserves_original_filename(self):
+        orig_file = create_dummy_file(
+            self.test_dir, "original.jpg", image_details={"size": (100, 100), "format": "JPEG"}
+        )
+        sha = media_scanner.get_file_sha256(orig_file)
+        media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=False)
+
+        entry1 = db_utils.get_media_file_by_sha(self.db_path, sha)
+        self.assertEqual(entry1["filename"], "original.jpg")
+
+        # Rename file on disk
+        renamed_file = os.path.join(self.test_dir, "renamed.jpg")
+        os.rename(orig_file, renamed_file)
+
+        media_scanner.scan_directory(self.test_dir, self.db_path, self.mock_image_classifier, rescan=True)
+        entry2 = db_utils.get_media_file_by_sha(self.db_path, sha)
+        self.assertIsNotNone(entry2)
+        self.assertEqual(entry2["filename"], "renamed.jpg")
+
+    # --- Orphaned Thumbnails Cleanup ---
+    def test_cleanup_orphaned_thumbnails(self):
+        # Inject an orphaned thumbnail on disk not in DB
+        orphan_dir = os.path.join(self.thumbnail_dir_path, "ff")
+        os.makedirs(orphan_dir, exist_ok=True)
+        orphan_file = os.path.join(orphan_dir, "ff" + "0" * 62 + ".png")
+        with open(orphan_file, "wb") as f:
+            f.write(b"dummy_orphan_thumbnail")
+
+        self.assertTrue(os.path.exists(orphan_file))
+
+        # Run orphan cleanup
+        media_scanner._cleanup_orphaned_thumbnails(self.db_path, self.thumbnail_dir_path)
+
+        # Orphan file and empty subdir should be pruned
+        self.assertFalse(os.path.exists(orphan_file))
+        self.assertFalse(os.path.exists(orphan_dir))
+
+    # --- GPS DMS Conversion Edge Cases ---
+    def test_convert_dms_to_decimal_edge_cases(self):
+        # 1. Normal N/W
+        lat = media_scanner._convert_dms_to_decimal(((34, 1), (5, 1), (12, 1)), "N")
+        self.assertAlmostEqual(lat, 34 + 5 / 60 + 12 / 3600)
+
+        # 2. Southern / Eastern hemisphere
+        lat_s = media_scanner._convert_dms_to_decimal(((33, 1), (51, 1), (0, 1)), "S")
+        self.assertAlmostEqual(lat_s, -(33 + 51 / 60))
+
+        lon_e = media_scanner._convert_dms_to_decimal(((151, 1), (12, 1), (0, 1)), "E")
+        self.assertAlmostEqual(lon_e, 151 + 12 / 60)
+
+        # 3. Zero denominator protection
+        lat_zero = media_scanner._convert_dms_to_decimal(((34, 1), (5, 0), (12, 1)), "N")
+        self.assertAlmostEqual(lat_zero, 34 + 12 / 3600)
+
+        # 4. Invalid length / ref
+        self.assertIsNone(media_scanner._convert_dms_to_decimal((34, 5), "N"))
+        self.assertIsNone(media_scanner._convert_dms_to_decimal(((34, 1), (5, 1), (12, 1)), "INVALID"))
+        self.assertIsNone(media_scanner._convert_dms_to_decimal(None, "N"))
+
 
 if __name__ == "__main__":
     unittest.main()
+

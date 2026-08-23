@@ -62,6 +62,36 @@ class TestGeoLocator(unittest.TestCase):
         finally:
             geolocator.cities = old_cities
 
+    def test_spatial_grid_ring_expansion_with_many_cities(self):
+        """Test with > 20 cities to force GeoLocator spatial grid ring search execution."""
+        geolocator = GeoLocator()
+        grid_csv = "test_grid_cities.csv"
+        try:
+            with open(grid_csv, "w", encoding="utf-8") as f:
+                f.write("city,lat,lng,country\n")
+                # Generate 30 cities across different grid cells
+                for i in range(30):
+                    f.write(f"City_{i},{10.0 + i * 0.5},{20.0 + i * 0.5},Country_{i}\n")
+
+            geolocator.load_cities(grid_csv, force=True)
+            self.assertGreater(len(geolocator.cities), 20)
+            self.assertTrue(bool(geolocator.grid))
+
+            # Query near City_5 (lat=12.5, lng=22.5)
+            match = geolocator.nearest_city(12.51, 22.51)
+            self.assertIsNotNone(match)
+            self.assertEqual(match.name, "City_5")
+
+            # Boundary coordinates: North Pole, South Pole, Prime Meridian, Antimeridian
+            self.assertIsNotNone(geolocator.nearest_city(90.0, 0.0))
+            self.assertIsNotNone(geolocator.nearest_city(-90.0, 0.0))
+            self.assertIsNotNone(geolocator.nearest_city(0.0, 180.0))
+            self.assertIsNotNone(geolocator.nearest_city(0.0, -180.0))
+        finally:
+            if os.path.exists(grid_csv):
+                os.remove(grid_csv)
+
 
 if __name__ == "__main__":
     unittest.main()
+

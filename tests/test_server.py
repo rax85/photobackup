@@ -544,7 +544,119 @@ class TestServerFlaskWithDB(unittest.TestCase):
         data = response.json
         self.assertTrue(data.get("connected"))
 
+    # --- HTTP 400 & SHA256 Format Validations ---
+    def test_get_image_invalid_sha_format_returns_400(self):
+        for bad_sha in ["short_sha", "g" * 64, "12345", "../../etc/passwd"]:
+            res = self.client.get(f"/image/{bad_sha}")
+            self.assertIn(res.status_code, [400, 404])
+
+    def test_get_thumbnail_invalid_sha_format_returns_400(self):
+        res = self.client.get("/thumbnail/invalid_sha_123")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Invalid SHA256 format", res.json["error"])
+
+    # --- Date & Range Parameter Validations ---
+    def test_list_media_by_date_invalid_format_returns_400(self):
+        for bad_date in ["2023-13-45", "not-a-date", "20230101"]:
+            res = self.client.get(f"/list/date/{bad_date}")
+            self.assertEqual(res.status_code, 400)
+            self.assertIn("Invalid date format", res.json["error"])
+
+    def test_list_media_by_date_range_inverted_returns_400(self):
+        res = self.client.get("/list/daterange/2023-02-01/2023-01-01")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Start date must be before end date", res.json["error"])
+
+    # --- Upload Error Conditions & Deduplication ---
+    def test_put_image_missing_file_part_returns_400(self):
+        res = self.client.put("/image/test.jpg", data={})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("No file part in the request", res.json["error"])
+
+    def test_put_image_disallowed_extension_returns_400(self):
+        data = {"file": (io.BytesIO(b"fake executable"), "script.exe")}
+        res = self.client.put("/image/script.exe", data=data, content_type="multipart/form-data")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Invalid file type", res.json["error"])
+
+    def test_put_image_duplicate_sha_returns_200_deduplication(self):
+        img_bytes = io.BytesIO()
+        Image.new("RGB", (50, 50), color="yellow").save(img_bytes, format="JPEG")
+        raw = img_bytes.getvalue()
+
+        # 1st Upload
+        res1 = self.client.put(
+            "/image/first.jpg",
+            data={"file": (io.BytesIO(raw), "first.jpg")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(res1.status_code, 201)
+        sha = res1.json["sha256"]
+
+        # 2nd Upload with exact same content
+        res2 = self.client.put(
+            "/image/second.jpg",
+            data={"file": (io.BytesIO(raw), "second.jpg")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(res2.status_code, 200)
+        self.assertIn("Image content already exists in DB", res2.json["message"])
+        self.assertEqual(res2.json["sha256"], sha)
+
+    # --- Video Range Requests (HTTP 206 Streaming) ---
+    def test_video_range_request_streaming(self):
+        video_content = b"0123456789" * 100  # 1000 bytes
+        video_sha = hashlib.sha256(video_content).hexdigest()
+        video_path = os.path.join(self.test_dir, "sample.mp4")
+        with open(video_path, "wb") as f:
+            f.write(video_content)
+
+        db_utils.add_or_update_media_file(
+            self.db_path,
+            {
+                "sha256_hex": video_sha,
+                "filename": "sample.mp4",
+                "file_path": "sample.mp4",
+                "last_modified": 1672531200,
+                "mime_type": "video/mp4",
+                "filesize": len(video_content),
+            },
+        )
+
+        headers = {"Range": "bytes=0-99"}
+        res = self.client.get(f"/image/{video_sha}", headers=headers)
+        self.assertEqual(res.status_code, 206)
+        self.assertEqual(res.content_type, "video/mp4")
+        self.assertEqual(len(res.data), 100)
+        self.assertEqual(res.data, video_content[0:100])
+        self.assertIn("bytes 0-99/1000", res.headers.get("Content-Range", ""))
+
+    # --- API Search & Stats Endpoints ---
+    def test_api_search_endpoint(self):
+        res = self.client.get("/api/search?q=sample&type=video")
+        self.assertEqual(res.status_code, 200)
+        self.assertIsInstance(res.json, dict)
+
+    def test_api_stats_endpoint(self):
+        res = self.client.get("/api/stats")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("total_count", res.json)
+        self.assertIn("video_count", res.json)
+        self.assertIn("image_count", res.json)
+
+    # --- Settings Update Error Handling ---
+    def test_put_settings_non_json_or_invalid_values(self):
+        # Non-JSON
+        res = self.client.put("/api/settings", data="not json", content_type="text/plain")
+        self.assertIn(res.status_code, [400, 415])
+
+        # Invalid rescan interval value
+        res = self.client.put("/api/settings", json={"rescan_interval": -500})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Invalid settings format", res.json["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

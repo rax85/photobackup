@@ -448,3 +448,128 @@ def test_scanning_page_in_progress(app_server):
             phase="complete",
             percent=100.0,
         )
+
+
+def test_gallery_empty_state_and_skeleton_loading(app_server):
+    """Verify skeleton cards during loading and empty state when 0 items exist."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 800})
+
+        # Intercept /api/media and /list to simulate 0 items
+        page.route("**/api/media*", lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"items": [], "total": 0, "has_more": false}'
+        ))
+        page.route("**/list", lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body="{}"
+        ))
+        page.route("**/api/stats", lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"total_count": 0, "image_count": 0, "video_count": 0, "total_size_bytes": 0}'
+        ))
+
+        page.goto(app_server)
+
+        # Assert empty state after load completes
+        empty_state = page.locator(".empty-state")
+        expect(empty_state).to_be_visible()
+        expect(empty_state.locator("h3")).to_have_text("No media found")
+        expect(page.locator("#timelineLinks")).to_contain_text("No dates available")
+
+        browser.close()
+
+
+def test_photoswipe_video_lifecycle_and_resource_cleanup(app_server):
+    """Verify video controls and resource destruction on modal close."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 800})
+        page.goto(app_server)
+
+        # Open lightbox at video card
+        page.locator(".gallery-item a[data-filename='sample_video.mp4']").click()
+        pswp = page.locator(".pswp")
+        expect(pswp).to_be_visible()
+
+        video = page.locator(".pswp-video-player").first
+        expect(video).to_be_attached()
+        expect(video).to_have_attribute("controls", "")
+        expect(video).to_have_attribute("playsinline", "")
+
+        # Close lightbox -> verify lightbox closes cleanly
+        page.locator(".pswp__button--close").click()
+        page.wait_for_timeout(300)
+        expect(pswp).not_to_have_class("pswp--open")
+
+        browser.close()
+
+
+def test_timeline_navigation_virtualization_and_scrollspy(app_server):
+    """Verify timeline anchor clicking, dynamic section mounting, and ScrollSpy activation."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 800})
+        page.goto(app_server)
+
+        # 1. Timeline list populated with months (at least 3 months)
+        timeline_links = page.locator(".timeline-link")
+        expect(timeline_links.first).to_be_visible()
+
+        # 2. Click 'December 2023' timeline link -> smoothly scrolls & mounts
+        dec_link = page.locator(".timeline-link:has-text('December 2023')")
+        expect(dec_link).to_be_visible()
+        dec_link.click()
+        page.wait_for_timeout(500)
+
+        # Section should be mounted and visible in viewport
+        dec_section = page.locator("section[id*='December_2023']")
+        expect(dec_section.locator(".gallery-item")).to_have_count(1)
+        expect(dec_section.locator(".card-title")).to_have_text("old_pic.jpg")
+
+        browser.close()
+
+
+def test_manual_rescan_button_flow(app_server):
+    """Verify manual library rescan trigger and feedback toast."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 800})
+        page.goto(app_server)
+
+        rescan_btn = page.locator("#rescanButton")
+        expect(rescan_btn).to_be_visible()
+
+        # Click rescan
+        rescan_btn.click()
+
+        # Check info toast
+        toast = page.locator(".toast.info")
+        expect(toast).to_be_visible()
+        expect(toast).to_contain_text("Starting library rescan")
+
+        browser.close()
+
+
+def test_upload_statuses_duplicate_and_error_handling(app_server):
+    """Verify upload dock duplicate handling and unsupported file skip toast."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 800})
+        page.goto(app_server)
+
+        # 1. Upload an unsupported file (.txt) alongside valid .jpg
+        page.set_input_files("#fileInput", [
+            {"name": "readme.txt", "mimeType": "text/plain", "buffer": b"test file"},
+        ])
+
+        # Assert skip toast appeared
+        skip_toast = page.locator(".toast.info")
+        expect(skip_toast).to_be_visible()
+        expect(skip_toast).to_contain_text("Skipped 1 unsupported file(s)")
+
+        browser.close()

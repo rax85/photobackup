@@ -86,6 +86,26 @@ class TestImageClassifier(unittest.TestCase):
             self.assertIsInstance(predictions[0][0], str)
             self.assertIsInstance(predictions[0][1], float)
 
+    @patch("media_server.image_classifier.image")
+    @patch("media_server.image_classifier.ResNet50V2")
+    def test_corrupt_image_returns_empty_predictions(self, mock_resnet, mock_image):
+        mock_image.load_img.side_effect = Exception("UnidentifiedImageError: image is corrupted")
+        classifier = ImageClassifier(self.settings)
+        preds = classifier.classify_image("corrupted.jpg")
+        self.assertEqual(preds, [])
+
+    @patch("media_server.image_classifier.ResNet50V2")
+    def test_unload_lifecycle(self, mock_resnet):
+        classifier = ImageClassifier(self.settings)
+        self.assertIsNotNone(classifier.model)
+        classifier.unload()
+        self.assertIsNone(classifier.model)
+        self.assertIsNone(classifier.preprocess_input)
+        self.assertIsNone(classifier.decode_predictions)
+        # classify_image returns [] after unload
+        self.assertEqual(classifier.classify_image("dummy.jpg"), [])
+
 
 if __name__ == "__main__":
     unittest.main()
+
